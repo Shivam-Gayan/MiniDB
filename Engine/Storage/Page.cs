@@ -114,6 +114,12 @@ namespace DB.Engine.Storage
             return true;
         }
 
+        bool TryInsertRecord(Record record, out int slotIndex)
+        {
+            byte[] payload = record.ToBytes();
+            return TryInsertRecord(payload, out slotIndex);
+        }
+
         byte[] ReadRecord(int slotId)
         {
             if (slotId < 0 || slotId >= Header.SlotCount)
@@ -139,6 +145,12 @@ namespace DB.Engine.Storage
             Array.Copy(Buffer, RecordOffset, record, 0, RecordLength);
 
             return record;
+        }
+
+        public Record ReadRecord(Schema schema, int slotId)
+        {
+            byte[] recordBytes = ReadRecord(slotId);
+            return Record.FromBytes(schema, recordBytes);
         }
 
         void DeleteRecord(int slotId)
