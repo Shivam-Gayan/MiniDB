@@ -6,9 +6,18 @@ using System.Threading.Tasks;
 
 namespace DB.Engine.Storage
 {
-    public class RID
+    public readonly struct RID
     {
-        int PageID { get; set; }
-        short SlotID { get; set; }
+        public int PageId { get; }
+        public int SlotId { get; }
+
+        public RID(int pageId, int slotId)
+        {
+            PageId = pageId;
+            SlotId = slotId;
+        }
+
+        public override string ToString() => $"RID(PageId: {PageId}, SlotId: {SlotId})";
+
     }
 }

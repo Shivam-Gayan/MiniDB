@@ -20,10 +20,13 @@ namespace DB.Engine.Storage
             FlushHeader(); // Write header to buffer
         }
 
+        public Page() { }
+
+
 
         // Methods
 
-        void Load(byte[] data)
+        public void Load(byte[] data)
         {
             if (data.Length != DbOptions.PageSize)
             {
@@ -49,13 +52,13 @@ namespace DB.Engine.Storage
             PageId = Header.PageId;
         }
 
-        byte[] GetBytes()
+        public byte[] GetBytes()
         {
             // Return the byte array representation of the page
             return Buffer;
         }
 
-        int GetFreeSpace()
+        public int GetFreeSpace()
         {
             if (Header.FreeSpaceOffset > DbOptions.PageSize || Header.SlotCount < 0)
                 return 0;  // corrupted page or bad header
@@ -74,7 +77,7 @@ namespace DB.Engine.Storage
          * reuse slots of deleted records
          * 
          */
-        bool TryInsertRecord(byte[] payload, out int slotIndex)
+        public bool TryInsertRecord(byte[] payload, out int slotIndex)
         {
 
             if (payload == null || payload.Length == 0)
@@ -114,13 +117,13 @@ namespace DB.Engine.Storage
             return true;
         }
 
-        bool TryInsertRecord(Record record, out int slotIndex)
+        public bool TryInsertRecord(Record record, out int slotIndex)
         {
             byte[] payload = record.ToBytes();
             return TryInsertRecord(payload, out slotIndex);
         }
 
-        byte[] ReadRecord(int slotId)
+        public byte[] ReadRecord(int slotId)
         {
             if (slotId < 0 || slotId >= Header.SlotCount)
             {
@@ -153,7 +156,7 @@ namespace DB.Engine.Storage
             return Record.FromBytes(schema, recordBytes);
         }
 
-        void DeleteRecord(int slotId)
+        public void DeleteRecord(int slotId)
         {
             if (slotId < 0 || slotId >= Header.SlotCount)
             {
@@ -175,7 +178,7 @@ namespace DB.Engine.Storage
             FlushHeader(); // Update header in buffer
         }
 
-        void FlushHeader()
+        public void FlushHeader()
         {
             Header.WriteTo(Buffer.AsSpan(0, DbOptions.HeaderSize));
         }
