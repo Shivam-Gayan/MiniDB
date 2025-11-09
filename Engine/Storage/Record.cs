@@ -10,7 +10,53 @@ namespace DB.Engine.Storage
         public Record(Schema schema, params object[] values)
         {
             if (schema.ColumnCount != values.Length)
-                throw new ArgumentException("Value count does not match schema.");
+            {
+                throw new ArgumentException("Value count does not match schema.");   
+            }
+
+            // Validate types
+            for (int i = 0; i < schema.ColumnTypes.Count; i++)
+            {
+                var expected = schema.ColumnTypes[i];
+                var value = values[i];
+                var isNullable = schema.IsNullable[i];
+                var colName = schema.Columns[i];
+
+                if (value == null)
+                {
+                    if (!isNullable)
+                        throw new ArgumentException($"Field '{colName}' cannot be null.");
+                    else
+                        continue; // null is acceptable
+                }
+
+                switch (expected)
+                {
+                    case FieldType.Integer:
+                        if (value is not int)
+                            throw new ArgumentException($"Field '{schema.Columns[i]}' expects an Integer.");
+                        break;
+
+                    case FieldType.String:
+                        if (value is not string)
+                            throw new ArgumentException($"Field '{schema.Columns[i]}' expects a String.");
+                        break;
+
+                    case FieldType.Boolean:
+                        if (value is not bool)
+                            throw new ArgumentException($"Field '{schema.Columns[i]}' expects a Boolean.");
+                        break;
+
+                    case FieldType.Double:
+                        if (value is not double)
+                            throw new ArgumentException($"Field '{schema.Columns[i]}' expects a Double.");
+                        break;
+
+                    default:
+                        throw new ArgumentException($"Unsupported field type: {expected}");
+                }
+            }
+
 
             Schema = schema;
             Values = values;

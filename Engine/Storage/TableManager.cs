@@ -31,39 +31,12 @@ namespace DB.Engine.Storage
             int firstPageId = _fileManager.AllocatePage(PageType.Data);
             _tables[tableName] = (schema, new List<int> { firstPageId });
 
-            // Serialize schema and page list for catalog
-            string schemaString = string.Join(",", schema.Columns.Zip(schema.ColumnTypes, (col,types) => $"{col}:{types}"));
-            string pageList = string.Join(",", _tables[tableName].pages);
-
-            // Create catalog record
-            var catalogRecord = new Record(
-                new Schema(
-                    "Catalog",
-                    ["TableName", "SchemaDef", "PageIds"],
-                    [FieldType.String, FieldType.String, FieldType.String]
-                ),
-                [tableName, schemaString, pageList]
-            );
-
-            // Load meta page
-            byte[] metaBytes = _fileManager.ReadPage(0);
-            var metaPage = new Page();
-            metaPage.Load(metaBytes);
-
-            // Insert catalog record into meta page
-            metaPage.TryInsertRecord(catalogRecord, out int slotIndex);
-            _fileManager.WritePage(0, metaPage.GetBytes());
-            _fileManager.Flush();
+            UpdateCatalogEntry(tableName, schema, [firstPageId]);
 
             Console.WriteLine($"Table '{tableName}' created successfully with first data page {firstPageId}.");
 
         }
 
-
-        /*
-         * TODO:
-         * optimize meta page updation to find and update old record instead of inserting new one 
-         */
         public RID Insert(string tableName, Record record)
         {
             if (!_tables.ContainsKey(tableName))
@@ -96,23 +69,7 @@ namespace DB.Engine.Storage
             _tables[tableName] = (schema, pages);
 
             // Update Meta page
-            string schemaString = string.Join(",", schema.Columns.Zip(schema.ColumnTypes, (col, type) => $"{col}:{type}"));
-            string pageList = string.Join(",", pages);
-
-            var catalogSchema = new Schema(
-                "Catalog",
-                ["TableName", "SchemaDef", "PageIds"],
-                [FieldType.String, FieldType.String, FieldType.String]
-            );
-
-            var catalogRecord = new Record(catalogSchema, tableName, schemaString, pageList);
-
-            byte[] metaBytes = _fileManager.ReadPage(0);
-            var metaPage = new Page();
-            metaPage.Load(metaBytes);
-            metaPage.TryInsertRecord(catalogRecord, out _);
-            _fileManager.WritePage(0, metaPage.GetBytes());
-            _fileManager.Flush();
+            UpdateCatalogEntry(tableName, schema, pages);
 
             // Insert record into new page
             var newDataPage = new Page(newPageId, PageType.Data);
@@ -158,65 +115,175 @@ namespace DB.Engine.Storage
             return results;
         }
 
-
-        /*
-         * after slot reuse implementation, update catalog saving logic
-         */
         public void SaveCatalog()
         {
-            // Save the catalog to a dedicated page in the file
-        }
-
-        private void LoadCatalog()
-        {
-            // Read meta page (page 0)
+            // Step 1: Load Meta page
             byte[] metaBytes = _fileManager.ReadPage(0);
             var metaPage = new Page();
             metaPage.Load(metaBytes);
 
-            // Define catalog schema
+            // Step 2: Define schema
             var catalogSchema = new Schema(
                 "Catalog",
                 ["TableName", "SchemaDef", "PageIds"],
                 [FieldType.String, FieldType.String, FieldType.String]
             );
 
-            // Parse each record in the meta page
+            // Step 3: Mark existing entries as deleted
+            for (int slot = 0; slot < metaPage.Header.SlotCount; slot++)
+            {
+                metaPage.DeleteRecord(slot);
+            }
+
+            // Step 4: Rewrite all current tables
+            foreach (var kvp in _tables)
+            {
+                string tableName = kvp.Key;
+                var (schema, pages) = kvp.Value;
+
+                UpdateCatalogEntry(tableName, schema, pages);
+            }
+
+            // Step 5: Flush to disk
+            _fileManager.Flush();
+            Console.WriteLine("Catalog saved successfully.");
+        }
+
+
+        private void UpdateCatalogEntry(string tableName, Schema schema, List<int> pages)
+        {
+            byte[] metaBytes = _fileManager.ReadPage(0);
+            var metaPage = new Page();
+            metaPage.Load(metaBytes);
+
+            var catalogSchema = new Schema(
+                "Catalog",
+                ["TableName", "SchemaDef", "PageIds"],
+                [FieldType.String, FieldType.String, FieldType.String]
+            );
+
+            string schemaString = string.Join(",", schema.Columns.Zip(schema.ColumnTypes.Zip(schema.IsNullable),(col, t) => $"{col}:{t.First}:{(t.Second ? "NULL" : "NOTNULL")}"));
+            string pageList = string.Join(",", pages);
+            var newRecord = new Record(catalogSchema, [tableName, schemaString, pageList]);
+
+            // find existing record slot
+
+            for (int slot =0; slot < metaPage.Header.SlotCount; slot++)
+            {
+                try
+                {
+                    var existingRecord = metaPage.ReadRecord(catalogSchema, slot);
+                    if (existingRecord == null) continue;
+
+                    string existingTableName = existingRecord.Values[0].ToString()!;
+                    if (existingTableName == tableName)
+                    {
+                        metaPage.DeleteRecord(slot);
+                        break;
+                    }
+                }
+                catch
+                {
+                    // skip corrupted/deleted records
+                }
+
+            }
+
+            metaPage.TryInsertRecord(newRecord, out _);
+            _fileManager.WritePage(0, metaPage.GetBytes());
+            _fileManager.Flush();
+
+        }
+
+
+        private void LoadCatalog()
+        {
+            // Read Meta (Catalog) page
+            byte[] metaBytes = _fileManager.ReadPage(0);
+            var metaPage = new Page();
+            metaPage.Load(metaBytes);
+
+            // Define the catalog schema (system-level)
+            var catalogSchema = new Schema(
+                "Catalog",
+                ["TableName", "SchemaDef", "PageIds"],
+                [FieldType.String, FieldType.String, FieldType.String]
+            );
+
+            // Parse each record stored in the Meta page
             for (int slot = 0; slot < metaPage.Header.SlotCount; slot++)
             {
                 var record = metaPage.ReadRecord(catalogSchema, slot);
+                if (record == null) continue; // skip deleted or invalid records
 
                 string tableName = record.Values[0].ToString()!;
                 string schemaString = record.Values[1].ToString()!;
                 string pageListString = record.Values[2].ToString()!;
 
-                // Parse schema string
+                // Parse schema string into columns, types, and nullability
                 var columns = new List<string>();
                 var types = new List<FieldType>();
+                var isNullable = new List<bool>();
 
                 foreach (var part in schemaString.Split(',', StringSplitOptions.RemoveEmptyEntries))
                 {
                     var kv = part.Split(':');
-                    if (kv.Length != 2) continue;
+                    if (kv.Length < 2) continue; // skip malformed entries
+
                     columns.Add(kv[0]);
                     types.Add(ParseFieldType(kv[1]));
+
+                    // If nullability info exists 
+                    if (kv.Length >= 3)
+                        isNullable.Add(kv[2].Equals("NULL", StringComparison.OrdinalIgnoreCase));
+                    else
+                        isNullable.Add(false); // default: NOT NULL
                 }
 
-                var schema = new Schema(tableName, columns, types);
+                // Build schema object from parsed info
+                var schema = new Schema(tableName, columns, types, isNullable);
 
-                // Parse page list
+                // Parse page list into integers
                 var pageIds = pageListString
                     .Split(',', StringSplitOptions.RemoveEmptyEntries)
                     .Select(int.Parse)
                     .ToList();
 
-                // Register table in in-memory dictionary
+                // Register table in memory
                 _tables[tableName] = (schema, pageIds);
             }
         }
 
+        public void VacuumTable(string tableName)
+        {
+            if (!_tables.ContainsKey(tableName))
+                throw new Exception($"Table '{tableName}' not found.");
 
-        private FieldType ParseFieldType(string typeName)
+            var (_, pages) = _tables[tableName];
+            foreach (var pageId in pages)
+            {
+                byte[] data = _fileManager.ReadPage(pageId);
+                var page = new Page();
+                page.Load(data);
+
+                page.Vacuum();
+
+                _fileManager.WritePage(pageId, page.GetBytes());
+            }
+
+            _fileManager.Flush();
+            Console.WriteLine($"Table '{tableName}' vacuumed successfully.");
+        }
+
+        public void VacuumAll()
+        {
+            foreach (var tableName in _tables.Keys)
+                VacuumTable(tableName);
+
+            Console.WriteLine("All tables vacuumed successfully.");
+        }
+
+        private static FieldType ParseFieldType(string typeName)
         {
             return typeName.ToLower() switch
             {

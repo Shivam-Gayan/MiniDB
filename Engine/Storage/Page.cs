@@ -70,13 +70,6 @@ namespace DB.Engine.Storage
             return FreeSpace;
         }
 
-        /*
-         * TODO:
-         * 
-         * add functionality to handle record fragmentation and compaction
-         * reuse slots of deleted records
-         * 
-         */
         public bool TryInsertRecord(byte[] payload, out int slotIndex)
         {
 
@@ -93,8 +86,6 @@ namespace DB.Engine.Storage
                 slotIndex = -1;
                 return false; // Not enough space
             }
-            // Insert the record and update header
-
 
             if (Header.SlotCount >= 1024)
             {
@@ -102,22 +93,56 @@ namespace DB.Engine.Storage
                 return false; // Too many records in this page
             }
 
+            // Check for reusable slots from deleted records
+            int reusableSlotIndex = -1;
+
+            for (int i = 0; i < Header.SlotCount; i++)
+            {
+                int slotOffset = DbOptions.PageSize - ((i + 1) * 4);
+                int recordOffset = BinaryPrimitives.ReadInt16LittleEndian(Buffer.AsSpan(slotOffset + 0, 2));
+                int recordLength = BinaryPrimitives.ReadInt16LittleEndian(Buffer.AsSpan(slotOffset + 2, 2));
+
+                if (recordOffset <= 0 && recordLength == 0)
+                {
+                    reusableSlotIndex = i;
+                    break;
+                }
+
+            }
+
+            // write record to buffer
+
             int RecordOffset = Header.FreeSpaceOffset;
             Array.Copy(payload, 0, Buffer, RecordOffset, RecordLength); // Copy payload to buffer
             Header.FreeSpaceOffset += RecordLength; // Update free space offset
 
-            // Update slot directory
-            int SlotOffset = DbOptions.PageSize - ((Header.SlotCount + 1) * 4);
-            BinaryPrimitives.WriteInt16LittleEndian(Buffer.AsSpan(SlotOffset + 0, 2), (short)RecordOffset); // Write record offset to slot
-            BinaryPrimitives.WriteInt16LittleEndian(Buffer.AsSpan(SlotOffset + 2, 2), (short)RecordLength); // Write record length to slot
-            Header.SlotCount += 1;
-            slotIndex = Header.SlotCount - 1;
+            if (reusableSlotIndex != -1)
+            {
+                // Reuse deleted slot
+
+                int SlotOffset = DbOptions.PageSize - ((reusableSlotIndex + 1) * 4);
+                BinaryPrimitives.WriteInt16LittleEndian(Buffer.AsSpan(SlotOffset + 0, 2), (short)RecordOffset); // Write record offset to slot
+                BinaryPrimitives.WriteInt16LittleEndian(Buffer.AsSpan(SlotOffset + 2, 2), (short)RecordLength); // Write record length to slot
+                slotIndex = reusableSlotIndex;
+
+            } else
+            {
+
+                // Update slot directory
+
+                int SlotOffset = DbOptions.PageSize - ((Header.SlotCount + 1) * 4);
+                BinaryPrimitives.WriteInt16LittleEndian(Buffer.AsSpan(SlotOffset + 0, 2), (short)RecordOffset); // Write record offset to slot
+                BinaryPrimitives.WriteInt16LittleEndian(Buffer.AsSpan(SlotOffset + 2, 2), (short)RecordLength); // Write record length to slot
+                Header.SlotCount += 1;
+                slotIndex = Header.SlotCount - 1;
+
+            }
             
             FlushHeader(); // Update header in buffer
             return true;
         }
 
-        public bool TryInsertRecord(Record record, out int slotIndex)
+        public bool TryInsertRecord(Record record, out int slotIndex) // overload for Record type to byte[]
         {
             byte[] payload = record.ToBytes();
             return TryInsertRecord(payload, out slotIndex);
@@ -150,11 +175,11 @@ namespace DB.Engine.Storage
             return record;
         }
 
-        public Record ReadRecord(Schema schema, int slotId)
+        public Record ReadRecord(Schema schema, int slotId) // overload for Record type to byte[]
         {
             byte[] recordBytes = ReadRecord(slotId);
             return Record.FromBytes(schema, recordBytes);
-        }
+        } 
 
         public void DeleteRecord(int slotId)
         {
@@ -172,11 +197,60 @@ namespace DB.Engine.Storage
                 return; // Already deleted
             }
 
-            BinaryPrimitives.WriteInt16LittleEndian(Buffer.AsSpan(SlotOffset + 0, 2), 0); // Mark record offset as 0
+            BinaryPrimitives.WriteInt16LittleEndian(Buffer.AsSpan(SlotOffset + 0, 2), -1); // Mark record offset as -1 (deleted) 
             BinaryPrimitives.WriteInt16LittleEndian(Buffer.AsSpan(SlotOffset + 2, 2), 0); // Mark record length as 0
 
             FlushHeader(); // Update header in buffer
         }
+
+        public void Vacuum()
+        {
+            // Step 1: Collect all valid records
+            var liveRecords = new List<(int SlotId, byte[] Data)>();
+
+            for (int slot = 0; slot < Header.SlotCount; slot++)
+            {
+                int slotOffset = DbOptions.PageSize - ((slot + 1) * 4);
+                int recordOffset = BinaryPrimitives.ReadInt16LittleEndian(Buffer.AsSpan(slotOffset, 2));
+                int recordLength = BinaryPrimitives.ReadInt16LittleEndian(Buffer.AsSpan(slotOffset + 2, 2));
+
+                if (recordOffset <= 0 || recordLength == 0)
+                    continue; // Skip deleted/free slots
+
+                byte[] recordData = new byte[recordLength];
+                Array.Copy(Buffer, recordOffset, recordData, 0, recordLength);
+
+                liveRecords.Add((slot, recordData));
+            }
+
+            // Step 2: Compact data region
+            int newOffset = DbOptions.HeaderSize;
+
+            foreach (var (slotId, recordData) in liveRecords)
+            {
+                Array.Copy(recordData, 0, Buffer, newOffset, recordData.Length);
+
+                int slotOffset = DbOptions.PageSize - ((slotId + 1) * 4);
+                BinaryPrimitives.WriteInt16LittleEndian(Buffer.AsSpan(slotOffset, 2), (short)newOffset);
+                BinaryPrimitives.WriteInt16LittleEndian(Buffer.AsSpan(slotOffset + 2, 2), (short)recordData.Length);
+
+                newOffset += recordData.Length;
+            }
+
+            // Step 3: Reset free space offset
+            Header.FreeSpaceOffset = newOffset;
+
+            // Step 4: (Optional) Zero out reclaimed space
+            int remaining = DbOptions.PageSize - newOffset - (Header.SlotCount * 4);
+            if (remaining > 0)
+                Array.Clear(Buffer, newOffset, remaining);
+
+            // Step 5: Flush header
+            FlushHeader();
+
+            Console.WriteLine($"Page {Header.PageId} vacuumed successfully. Freed space up to offset {newOffset}.");
+        }
+
 
         public void FlushHeader()
         {
