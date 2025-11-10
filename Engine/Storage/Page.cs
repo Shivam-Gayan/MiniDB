@@ -20,7 +20,12 @@ namespace DB.Engine.Storage
             FlushHeader(); // Write header to buffer
         }
 
-        public Page() { }
+        public Page() 
+        {
+            Buffer = new byte[DbOptions.PageSize];
+            Header = new PageHeader(0, PageType.Free); // default placeholder
+            FlushHeader();
+        }
 
 
 

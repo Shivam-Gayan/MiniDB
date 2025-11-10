@@ -9,7 +9,7 @@ namespace DB.Engine.Database
     public class SystemCatalog
     {
         private readonly string _catalogFilePath;
-        private Dictionary<string, DateTime> _databases;
+        private Dictionary<string, DatabaseInfo> _databases;
 
         public SystemCatalog(string rootPath)
         {
@@ -36,7 +36,10 @@ namespace DB.Engine.Database
                 throw new InvalidOperationException($"Database '{dbName}' already exists.");
             }
 
-            _databases[dbName] = DateTime.UtcNow;
+            string dbPath = Path.Combine(Path.GetDirectoryName(_catalogFilePath)!, dbName);
+            var info = new DatabaseInfo(dbName, dbPath);
+            _databases[dbName] = info;
+
             Save();
         }
 
@@ -68,12 +71,12 @@ namespace DB.Engine.Database
 
             try {
                 string json = File.ReadAllText(_catalogFilePath);
-                _databases = JsonSerializer.Deserialize<Dictionary<string, DateTime>>(json)
-                    ?? [];
+                _databases = JsonSerializer.Deserialize<Dictionary<string, DatabaseInfo>>(json)
+                    ?? new();
             }
             catch(Exception)
             {
-                Console.WriteLine("Warning: Failed to load system catalog. Initializing empty catalog.");
+                Console.WriteLine("Corrupted catalog file detected. Reinitializing...");
                 _databases = [];
                 Save();
             }
@@ -86,6 +89,45 @@ namespace DB.Engine.Database
         {
             string json = JsonSerializer.Serialize(_databases, new JsonSerializerOptions { WriteIndented = true });
             File.WriteAllText(_catalogFilePath, json);
+        }
+
+        /// <summary>
+        /// Returns metadata for all databases.
+        /// </summary>
+        public IEnumerable<DatabaseInfo> GetAllDatabaseInfo()
+        {
+            return _databases.Values;
+        }
+        /// <summary>
+        /// Gets the metadata info for a specific database.
+        /// </summary>
+        public DatabaseInfo? GetInfo(string dbName)
+        {
+            _databases.TryGetValue(dbName, out var info);
+            return info;
+        }
+
+        /// <summary>
+        /// Marks a database as accessed and updates last access time.
+        /// </summary>
+        public void MarkAsAccessed(string dbName)
+        {
+            if (_databases.TryGetValue(dbName, out var info))
+            {
+                info.UpdateLastAccessed();
+                Save();
+            }
+        }
+
+        /// <summary>
+        /// Updates the size info for all databases (optional, heavy operation).
+        /// </summary>
+        public void RecalculateAllSizes()
+        {
+            foreach (var db in _databases.Values)
+                db.RecalculateSize();
+
+            Save();
         }
     }
 }
