@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Reflection.Metadata.Ecma335;
 using System.Text;
 using System.Threading.Tasks;
 
@@ -80,7 +81,6 @@ namespace DB.Engine.Storage
             return new RID(newPageId, newSlot);
         }
 
-
         public List<Record> SelectAll(string tableName)
         {
             if (!_tables.ContainsKey(tableName))
@@ -149,53 +149,6 @@ namespace DB.Engine.Storage
             Console.WriteLine("Catalog saved successfully.");
         }
 
-
-        private void UpdateCatalogEntry(string tableName, Schema schema, List<int> pages)
-        {
-            byte[] metaBytes = _fileManager.ReadPage(0);
-            var metaPage = new Page();
-            metaPage.Load(metaBytes);
-
-            var catalogSchema = new Schema(
-                "Catalog",
-                ["TableName", "SchemaDef", "PageIds"],
-                [FieldType.String, FieldType.String, FieldType.String]
-            );
-
-            string schemaString = string.Join(",", schema.Columns.Zip(schema.ColumnTypes.Zip(schema.IsNullable),(col, t) => $"{col}:{t.First}:{(t.Second ? "NULL" : "NOTNULL")}"));
-            string pageList = string.Join(",", pages);
-            var newRecord = new Record(catalogSchema, [tableName, schemaString, pageList]);
-
-            // find existing record slot
-
-            for (int slot =0; slot < metaPage.Header.SlotCount; slot++)
-            {
-                try
-                {
-                    var existingRecord = metaPage.ReadRecord(catalogSchema, slot);
-                    if (existingRecord == null) continue;
-
-                    string existingTableName = existingRecord.Values[0].ToString()!;
-                    if (existingTableName == tableName)
-                    {
-                        metaPage.DeleteRecord(slot);
-                        break;
-                    }
-                }
-                catch
-                {
-                    // skip corrupted/deleted records
-                }
-
-            }
-
-            metaPage.TryInsertRecord(newRecord, out _);
-            _fileManager.WritePage(0, metaPage.GetBytes());
-            _fileManager.Flush();
-
-        }
-
-
         private void LoadCatalog()
         {
             // Read Meta (Catalog) page
@@ -216,9 +169,9 @@ namespace DB.Engine.Storage
                 var record = metaPage.ReadRecord(catalogSchema, slot);
                 if (record == null) continue; // skip deleted or invalid records
 
-                string tableName = record.Values[0].ToString()!;
-                string schemaString = record.Values[1].ToString()!;
-                string pageListString = record.Values[2].ToString()!;
+                string tableName = record.Values[0]?.ToString()!;
+                string schemaString = record.Values[1]?.ToString()!;
+                string pageListString = record.Values[2]?.ToString()!;
 
                 // Parse schema string into columns, types, and nullability
                 var columns = new List<string>();
@@ -281,6 +234,94 @@ namespace DB.Engine.Storage
                 VacuumTable(tableName);
 
             Console.WriteLine("All tables vacuumed successfully.");
+        }
+
+        // Helpers
+        public bool TableExists(string tableName)
+        {
+            ArgumentNullException.ThrowIfNull(tableName);
+
+            if (string.IsNullOrWhiteSpace(tableName))
+                throw new ArgumentException("Table name cannot be empty.", nameof(tableName));
+
+            return _tables.ContainsKey(tableName);
+        }
+
+        public Schema? GetSchema(string tableName)
+        {
+            ArgumentNullException.ThrowIfNull(tableName);
+
+            if (string.IsNullOrWhiteSpace(tableName))
+            {
+                throw new ArgumentException("Table name cannot be empty.", nameof(tableName));
+            }
+
+            if (_tables.TryGetValue(tableName, out var entry))
+            {
+                return entry.schema;
+            }
+            return null;
+        }
+
+        public List<int> GetPages(string tableName)
+        {
+            ArgumentNullException.ThrowIfNull(tableName);
+
+            if (string.IsNullOrWhiteSpace(tableName))
+            {
+                throw new ArgumentException("Table name cannot be empty.", nameof(tableName));
+            }
+
+            if (_tables.TryGetValue(tableName, out var entry))
+            {
+                return entry.pages;
+            }
+            return [];
+        }
+
+        private void UpdateCatalogEntry(string tableName, Schema schema, List<int> pages)
+        {
+            byte[] metaBytes = _fileManager.ReadPage(0);
+            var metaPage = new Page();
+            metaPage.Load(metaBytes);
+
+            var catalogSchema = new Schema(
+                "Catalog",
+                ["TableName", "SchemaDef", "PageIds"],
+                [FieldType.String, FieldType.String, FieldType.String]
+            );
+
+            string schemaString = string.Join(",", schema.Columns.Zip(schema.ColumnTypes.Zip(schema.IsNullable),(col, t) => $"{col}:{t.First}:{(t.Second ? "NULL" : "NOTNULL")}"));
+            string pageList = string.Join(",", pages);
+            var newRecord = new Record(catalogSchema, [tableName, schemaString, pageList]);
+
+            // find existing record slot
+
+            for (int slot =0; slot < metaPage.Header.SlotCount; slot++)
+            {
+                try
+                {
+                    var existingRecord = metaPage.ReadRecord(catalogSchema, slot);
+                    if (existingRecord == null) continue;
+
+                    string existingTableName = existingRecord.Values[0]?.ToString()!;
+                    if (existingTableName == tableName)
+                    {
+                        metaPage.DeleteRecord(slot);
+                        break;
+                    }
+                }
+                catch
+                {
+                    // skip corrupted/deleted records
+                }
+
+            }
+
+            metaPage.TryInsertRecord(newRecord, out _);
+            _fileManager.WritePage(0, metaPage.GetBytes());
+            _fileManager.Flush();
+
         }
 
         private static FieldType ParseFieldType(string typeName)

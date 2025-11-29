@@ -16,8 +16,8 @@ namespace DB.Engine.Database
 
         public DatabaseContext(string dbName, string dbPath)
         {
-            DatabaseName = dbName;
-            DatabasePath = dbPath;
+            DatabaseName = dbName ?? throw new ArgumentNullException(nameof(dbName)); ;
+            DatabasePath = dbPath ?? throw new ArgumentNullException(nameof(dbPath));
 
             string dataFile = Path.Combine(dbPath, $"{dbName}_data.db");
             FileManager = new FileManager(dataFile);
@@ -29,7 +29,14 @@ namespace DB.Engine.Database
         /// </summary>
         public void Close()
         {
-            FileManager.Close();
+            try 
+            {
+                FileManager?.Flush();
+                FileManager?.Close();
+            }catch
+            {
+               
+            }
         }
     }
 }

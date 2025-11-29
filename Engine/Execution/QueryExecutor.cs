@@ -1,53 +1,60 @@
-﻿using DB.Engine.Storage;
+﻿using DB.Engine.Database;
+using DB.Engine.Storage;
 
 namespace DB.Engine.Execution
 {
-    /// <summary>
-    /// The QueryExecutor is the high-level entry point for executing database operations.
-    /// It orchestrates commands like INSERT, SELECT, and DELETE by delegating to RecordManager and TableScan.
-    /// </summary>
     public class QueryExecutor
     {
-        private readonly RecordManager _recordManager;
-        private readonly TableScan _tableScan;
-        private readonly TableManager _tableManager;
-        private readonly FileManager _fileManager;
+        private readonly ExecutionContext _execCtx;
 
-        /// <summary>
-        /// Initializes a new QueryExecutor instance.
-        /// </summary>
-        public QueryExecutor(TableManager tableManager, FileManager fileManager)
+        public QueryExecutor(ExecutionContext execCtx)
         {
-            _tableManager = tableManager;
-            _fileManager = fileManager;
-            _recordManager = new RecordManager(_tableManager, _fileManager);
-            _tableScan = new TableScan(_tableManager, _fileManager);
+            _execCtx = execCtx ?? throw new ArgumentNullException(nameof(execCtx));
         }
 
-        // ------------------- High-level Commands -------------------
+        private DatabaseContext GetCtx() => _execCtx.GetActiveDatabase(true);
 
-        /// <summary>
-        /// Executes an INSERT operation into a given table.
-        /// </summary>
-        public RID Insert(string tableName, Record record)
+        public QueryResult CreateTable(string tableName, Schema schema)
         {
-            return _recordManager.Insert(tableName, record);
+            if (string.IsNullOrWhiteSpace(tableName)) return QueryResult.Fail("Table name cannot be empty.");
+            if (schema == null) return QueryResult.Fail("Schema cannot be null.");
+
+            try
+            {
+                var ctx = GetCtx();
+
+                if (ctx.TableManager.TableExists(tableName))
+                    return QueryResult.Fail($"Table '{tableName}' already exists in database '{ctx.DatabaseName}'.");
+
+                ctx.TableManager.CreateTable(tableName, schema);
+                return QueryResult.Ok($"Table '{tableName}' created successfully.");
+            }
+            catch (Exception ex)
+            {
+                return QueryResult.Fail(ex.Message);
+            }
         }
 
-        /// <summary>
-        /// Executes a SELECT * FROM Table operation.
-        /// </summary>
+        public RID Insert(string tableName, IList<object?> values)
+        {
+            var ctx = GetCtx();
+            var rm = new RecordManager(ctx);
+            var record = rm.BuildRecord(tableName, values);
+            return rm.Insert(tableName, record);
+        }
+
         public IEnumerable<Record> SelectAll(string tableName)
         {
-            return _tableScan.ScanTable(tableName);
+            var ctx = GetCtx();
+            var scan = new TableScan(ctx);
+            return scan.ScanTable(tableName);
         }
 
-        /// <summary>
-        /// Executes a DELETE operation for a given record.
-        /// </summary>
         public bool Delete(string tableName, RID rid)
         {
-            return _recordManager.Delete(tableName, rid);
+            var ctx = GetCtx();
+            var rm = new RecordManager(ctx);
+            return rm.Delete(tableName, rid);
         }
     }
 }

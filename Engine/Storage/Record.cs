@@ -5,9 +5,9 @@ namespace DB.Engine.Storage
     public class Record
     {
         public Schema Schema { get; }
-        public object[] Values { get; }
+        public object?[] Values { get; }
 
-        public Record(Schema schema, params object[] values)
+        public Record(Schema schema, params object?[] values)
         {
             if (schema.ColumnCount != values.Length)
             {
@@ -81,7 +81,7 @@ namespace DB.Engine.Storage
                         writer.Write(Convert.ToDouble(value));
                         break;
                     case FieldType.Boolean:
-                        writer.Write((bool)value);
+                        writer.Write(value is bool b ? b : default(bool));
                         break;
                     case FieldType.String:
                         var str = value?.ToString() ?? string.Empty;

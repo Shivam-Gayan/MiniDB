@@ -223,5 +223,32 @@ namespace DB.Engine.Database
         /// Returns the name of the currently active database.
         /// </summary>
         public string? ActiveDatabase => _activeContext?.DatabaseName;
+
+        /// <summary>
+        /// Opens an existing database context for the specified database name.
+        /// </summary>
+        /// <remarks>The caller is responsible for managing the lifecycle of the returned <see
+        /// cref="DatabaseContext"/>, including closing it when no longer needed.</remarks>
+        /// <param name="dbName">The name of the database to open. Cannot be null, empty, or consist only of white-space characters.</param>
+        /// <returns>A new instance of <see cref="DatabaseContext"/> representing the specified database.</returns>
+        /// <exception cref="ArgumentException">Thrown if <paramref name="dbName"/> is null, empty, or consists only of white-space characters.</exception>
+        /// <exception cref="InvalidOperationException">Thrown if the specified database does not exist in the catalog or if the corresponding database directory is
+        /// missing.</exception>
+        /// </summary>
+        public DatabaseContext OpenContext(string dbName)
+        {
+            if (string.IsNullOrWhiteSpace(dbName))
+                throw new ArgumentException("Database name cannot be null or empty.", nameof(dbName));
+
+            if (!_catalog.Exists(dbName))
+                throw new InvalidOperationException($"Database '{dbName}' does not exist in the catalog.");
+
+            string dbPath = Path.Combine(_rootPath, dbName);
+            if (!Directory.Exists(dbPath))
+                throw new InvalidOperationException($"Database directory for '{dbName}' is missing.");
+
+            // Create and return a new DatabaseContext — caller manages lifecycle (Close)
+            return new DatabaseContext(dbName, dbPath);
+        }
     }
 }
