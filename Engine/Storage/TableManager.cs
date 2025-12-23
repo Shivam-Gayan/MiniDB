@@ -21,6 +21,20 @@ namespace DB.Engine.Storage
 
 
         // Methods
+
+        public void DropTable(string tableName)
+        {
+            if (!_tables.ContainsKey(tableName))
+                throw new InvalidOperationException($"Table '{tableName}' does not exist.");
+
+            // 1️ Remove table metadata (schema + pages)
+            _tables.Remove(tableName);
+
+            // 2️ Persist catalog change
+            SaveCatalog();
+        }
+
+
         public IReadOnlyList<string> ListTables()
         {
             return _tables.Keys.ToList();
@@ -42,15 +56,13 @@ namespace DB.Engine.Storage
 
         }
 
-        public RID Insert(string tableName, Record record)
+        public RID Insert(string tableName, Schema schema, object?[] values)
         {
             if (!_tables.ContainsKey(tableName))
                 throw new Exception($"Table '{tableName}' does not exist.");
 
-            var (schema, pages) = _tables[tableName];
-
-            if (!schema.Equals(record.Schema))
-                throw new Exception("Record schema does not match table schema.");
+            var (_, pages) = _tables[tableName];
+            var recordBytes = Record.Serialize(schema, values);
 
             // Try inserting into existing pages
             foreach (int pageId in pages)
@@ -59,31 +71,32 @@ namespace DB.Engine.Storage
                 var page = new Page();
                 page.Load(data);
 
-                if (record.ToBytes().Length + 4 <= page.GetFreeSpace())
+                if (recordBytes.Length + 4 <= page.GetFreeSpace())
                 {
-                    page.TryInsertRecord(record, out int slot);
+                    page.TryInsertRecord(recordBytes, out int slot);
                     _fileManager.WritePage(pageId, page.GetBytes());
                     _fileManager.Flush();
                     return new RID(pageId, slot);
                 }
             }
 
-            // No space left -> allocate new page
+            // No space left → allocate new page
             int newPageId = _fileManager.AllocatePage(PageType.Data);
             pages.Add(newPageId);
             _tables[tableName] = (schema, pages);
 
-            // Update Meta page
+            // Update catalog
             UpdateCatalogEntry(tableName, schema, pages);
 
             // Insert record into new page
-            var newDataPage = new Page(newPageId, PageType.Data);
-            newDataPage.TryInsertRecord(record, out int newSlot);
-            _fileManager.WritePage(newPageId, newDataPage.GetBytes());
+            var newPage = new Page(newPageId, PageType.Data);
+            newPage.TryInsertRecord(recordBytes, out int newSlot);
+            _fileManager.WritePage(newPageId, newPage.GetBytes());
             _fileManager.Flush();
 
             return new RID(newPageId, newSlot);
         }
+
 
         public List<Record> SelectAll(string tableName)
         {
@@ -295,44 +308,50 @@ namespace DB.Engine.Storage
                 [FieldType.String, FieldType.String, FieldType.String]
             );
 
-            string schemaString = string.Join(",", schema.Columns.Zip(schema.ColumnTypes.Zip(schema.IsNullable),(col, t) => $"{col}:{t.First}:{(t.Second ? "NULL" : "NOTNULL")}"));
+            string schemaString = string.Join(",",
+                schema.Columns.Zip(
+                    schema.ColumnTypes.Zip(schema.IsNullable),
+                    (col, t) => $"{col}:{t.First}:{(t.Second ? "NULL" : "NOTNULL")}"
+                )
+            );
+
             string pageList = string.Join(",", pages);
-            var newRecord = new Record(catalogSchema, [tableName, schemaString, pageList]);
 
-            // find existing record slot
-
-            for (int slot =0; slot < metaPage.Header.SlotCount; slot++)
+            // DELETE EXISTING ENTRY
+            for (int slot = 0; slot < metaPage.Header.SlotCount; slot++)
             {
                 try
                 {
-                    var existingRecord = metaPage.ReadRecord(catalogSchema, slot);
-                    if (existingRecord == null) continue;
+                    var existing = metaPage.ReadRecord(catalogSchema, slot);
+                    if (existing == null) continue;
 
-                    string existingTableName = existingRecord.Values[0]?.ToString()!;
-                    if (existingTableName == tableName)
+                    if (existing.Values[0]?.ToString() == tableName)
                     {
                         metaPage.DeleteRecord(slot);
                         break;
                     }
                 }
-                catch
-                {
-                    // skip corrupted/deleted records
-                }
-
+                catch { }
             }
 
-            metaPage.TryInsertRecord(newRecord, out _);
+            // INSERT RAW CATALOG RECORD
+            var recordBytes = Record.Serialize(
+                catalogSchema,
+                [tableName, schemaString, pageList]
+            );
+
+            metaPage.TryInsertRecord(recordBytes, out _);
             _fileManager.WritePage(0, metaPage.GetBytes());
             _fileManager.Flush();
-
         }
+
+        
 
         private static FieldType ParseFieldType(string typeName)
         {
             return typeName.ToLower() switch
             {
-                "int32" or "int" => FieldType.Integer,
+                "int32" or "int" or "integer" => FieldType.Integer,
                 "string" => FieldType.String,
                 "bool" or "boolean" => FieldType.Boolean,
                 "double" => FieldType.Double,

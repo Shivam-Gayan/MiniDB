@@ -42,23 +42,20 @@ namespace DB.Engine.Execution
 
             ArgumentNullException.ThrowIfNull(record);
 
-            // Ensure table exists
             if (!_tableManager.TableExists(tableName))
                 throw new InvalidOperationException($"Table '{tableName}' does not exist.");
 
-            // Ensure schema matches (simple check: same column count + column names)
             var schema = _tableManager.GetSchema(tableName)
                 ?? throw new InvalidOperationException($"Schema for table '{tableName}' not found.");
 
             if (schema.ColumnCount != record.Schema.ColumnCount ||
                 !schema.Columns.SequenceEqual(record.Schema.Columns))
-            {
                 throw new InvalidOperationException("Record schema does not match table schema.");
-            }
 
-            // Delegate actual insertion to TableManager (which handles pages, allocation, meta updates)
-            var rid = _tableManager.Insert(tableName, record);
+            //INSERT USING SCHEMA + VALUES (NOT RECORD)
+            var rid = _tableManager.Insert(tableName, schema, record.Values);
 
+            //UPDATE INDEXES
             for (int i = 0; i < schema.Columns.Count; i++)
             {
                 string column = schema.Columns[i];
@@ -72,6 +69,7 @@ namespace DB.Engine.Execution
 
             return rid;
         }
+
 
         /// <summary>
         /// Reads a record from a specific table by its RID.
@@ -173,25 +171,23 @@ namespace DB.Engine.Execution
             return true;
         }
 
-        public Record BuildRecord(string tableName, IList<object?> values)
+        public object?[] BuildRecordValues(string tableName, IList<object?> values)
         {
-            // 1) Get schema for table
-            var schema = _tableManager.GetSchema(tableName) ?? throw new InvalidOperationException($"Table '{tableName}' does not exist.");
+            var schema = _tableManager.GetSchema(tableName)
+                ?? throw new InvalidOperationException($"Table '{tableName}' does not exist.");
 
-            // 2) Ensure value count matches
             if (values.Count != schema.Columns.Count)
-                throw new ArgumentException($"Expected {schema.Columns.Count} values but received {values.Count}.");
+                throw new ArgumentException(
+                    $"Expected {schema.Columns.Count} values but received {values.Count}.");
 
-            object?[] typed = new object?[values.Count];
+            var typed = new object?[values.Count];
 
-            // 3) Validate and convert each value
             for (int i = 0; i < values.Count; i++)
             {
-                object? val = values[i];
+                var val = values[i];
                 var type = schema.ColumnTypes[i];
-                bool nullable = schema.IsNullable[i];
+                var nullable = schema.IsNullable[i];
 
-                // NULL handling
                 if (val == null)
                 {
                     if (!nullable)
@@ -200,28 +196,19 @@ namespace DB.Engine.Execution
                     continue;
                 }
 
-                // Type conversion
-                try
+                typed[i] = type switch
                 {
-                    typed[i] = type switch
-                    {
-                        FieldType.Integer => Convert.ToInt32(val),
-                        FieldType.Double => Convert.ToDouble(val),
-                        FieldType.Boolean => Convert.ToBoolean(val),
-                        FieldType.String => val.ToString()!,
-                        _ => throw new Exception($"Unsupported field type: {type}")
-                    };
-                }
-                catch
-                {
-                    throw new ArgumentException(
-                        $"Value '{val}' is invalid for column '{schema.Columns[i]}' (expected {type}).");
-                }
+                    FieldType.Integer => Convert.ToInt32(val),
+                    FieldType.Double => Convert.ToDouble(val),
+                    FieldType.Boolean => Convert.ToBoolean(val),
+                    FieldType.String => val.ToString(),
+                    _ => throw new Exception($"Unsupported field type: {type}")
+                };
             }
 
-            // 4) Build and return record
-            return new Record(schema, typed);
+            return typed;
         }
+
 
     }
 }

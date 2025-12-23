@@ -183,7 +183,7 @@ namespace DB.Engine.Storage
         public Record ReadRecord(Schema schema, int slotId) // overload for Record type to byte[]
         {
             byte[] recordBytes = ReadRecord(slotId);
-            return Record.FromBytes(schema, recordBytes);
+            return Record.FromBytes(schema, recordBytes,new RID(PageId,slotId));
         } 
 
         public void DeleteRecord(int slotId)

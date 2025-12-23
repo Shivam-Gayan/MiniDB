@@ -2,64 +2,90 @@
 
 namespace DB.Engine.Storage
 {
-    public class Record
+    public sealed class Record
     {
         public Schema Schema { get; }
         public object?[] Values { get; }
+        public RID Rid { get; }
 
-        public Record(Schema schema, params object?[] values)
+        // ---------------- CONSTRUCTOR ----------------
+
+        public Record(Schema schema, RID rid, params object?[] values)
         {
             if (schema.ColumnCount != values.Length)
-            {
-                throw new ArgumentException("Value count does not match schema.");   
-            }
+                throw new ArgumentException("Value count does not match schema.");
 
             // Validate types
-            for (int i = 0; i < schema.ColumnTypes.Count; i++)
+            for (int i = 0; i < schema.ColumnCount; i++)
             {
+                if (values[i] == null && !schema.IsNullable[i])
+                {
+                    throw new InvalidOperationException(
+                        $"Column '{schema.Columns[i]}' cannot be NULL.");
+                }
+
                 var expected = schema.ColumnTypes[i];
                 var value = values[i];
-                var isNullable = schema.IsNullable[i];
+                var nullable = schema.IsNullable[i];
                 var colName = schema.Columns[i];
 
                 if (value == null)
                 {
-                    if (!isNullable)
-                        throw new ArgumentException($"Field '{colName}' cannot be null.");
-                    else
-                        continue; // null is acceptable
+                    if (!nullable)
+                        throw new ArgumentException($"Field '{colName}' cannot be NULL.");
+                    continue;
                 }
 
                 switch (expected)
                 {
-                    case FieldType.Integer:
-                        if (value is not int)
-                            throw new ArgumentException($"Field '{schema.Columns[i]}' expects an Integer.");
-                        break;
-
-                    case FieldType.String:
-                        if (value is not string)
-                            throw new ArgumentException($"Field '{schema.Columns[i]}' expects a String.");
-                        break;
-
-                    case FieldType.Boolean:
-                        if (value is not bool)
-                            throw new ArgumentException($"Field '{schema.Columns[i]}' expects a Boolean.");
-                        break;
-
-                    case FieldType.Double:
-                        if (value is not double)
-                            throw new ArgumentException($"Field '{schema.Columns[i]}' expects a Double.");
-                        break;
-
-                    default:
-                        throw new ArgumentException($"Unsupported field type: {expected}");
+                    case FieldType.Integer when value is not int:
+                        throw new ArgumentException($"Field '{colName}' expects INTEGER.");
+                    case FieldType.String when value is not string:
+                        throw new ArgumentException($"Field '{colName}' expects STRING.");
+                    case FieldType.Boolean when value is not bool:
+                        throw new ArgumentException($"Field '{colName}' expects BOOLEAN.");
+                    case FieldType.Double when value is not double:
+                        throw new ArgumentException($"Field '{colName}' expects DOUBLE.");
                 }
             }
 
-
             Schema = schema;
             Values = values;
+            Rid = rid;
+        }
+
+        // ---------------- SERIALIZATION ----------------
+        public static byte[] Serialize(Schema schema, object?[] values)
+        {
+            using var ms = new MemoryStream();
+            using var writer = new BinaryWriter(ms);
+
+            for (int i = 0; i < schema.ColumnCount; i++)
+            {
+                var type = schema.ColumnTypes[i];
+                var value = values[i];
+
+                switch (type)
+                {
+                    case FieldType.Integer:
+                        writer.Write((int)value!);
+                        break;
+                    case FieldType.Double:
+                        writer.Write((double)value!);
+                        break;
+                    case FieldType.Boolean:
+                        writer.Write((bool)value!);
+                        break;
+                    case FieldType.String:
+                        var str = (string?)value ?? string.Empty;
+                        var bytes = Encoding.UTF8.GetBytes(str);
+                        writer.Write((short)bytes.Length);
+                        writer.Write(bytes);
+                        break;
+                }
+            }
+
+            return ms.ToArray();
         }
 
         public byte[] ToBytes()
@@ -75,60 +101,62 @@ namespace DB.Engine.Storage
                 switch (type)
                 {
                     case FieldType.Integer:
-                        writer.Write(Convert.ToInt32(value));
+                        writer.Write((int)value!);
                         break;
+
                     case FieldType.Double:
-                        writer.Write(Convert.ToDouble(value));
+                        writer.Write((double)value!);
                         break;
+
                     case FieldType.Boolean:
-                        writer.Write(value is bool b ? b : default(bool));
+                        writer.Write((bool)value!);
                         break;
+
                     case FieldType.String:
-                        var str = value?.ToString() ?? string.Empty;
+                        var str = (string?)value ?? string.Empty;
                         var bytes = Encoding.UTF8.GetBytes(str);
                         writer.Write((short)bytes.Length);
                         writer.Write(bytes);
                         break;
+
                     default:
-                        throw new InvalidOperationException($"Unsupported field type: {type}");
+                        throw new InvalidOperationException($"Unsupported field type {type}");
                 }
             }
 
             return ms.ToArray();
         }
 
-        public static Record FromBytes(Schema schema, byte[] data)
+        // ---------------- DESERIALIZATION ----------------
+
+        public static Record FromBytes(
+            Schema schema,
+            byte[] data,
+            RID rid)
         {
             using var ms = new MemoryStream(data);
             using var reader = new BinaryReader(ms);
 
-            object[] values = new object[schema.ColumnCount];
+            var values = new object?[schema.ColumnCount];
 
             for (int i = 0; i < schema.ColumnCount; i++)
             {
                 var type = schema.ColumnTypes[i];
 
-                switch (type)
+                values[i] = type switch
                 {
-                    case FieldType.Integer:
-                        values[i] = reader.ReadInt32();
-                        break;
-                    case FieldType.Double:
-                        values[i] = reader.ReadDouble();
-                        break;
-                    case FieldType.Boolean:
-                        values[i] = reader.ReadBoolean();
-                        break;
-                    case FieldType.String:
-                        short len = reader.ReadInt16();
-                        byte[] bytes = reader.ReadBytes(len);
-                        values[i] = Encoding.UTF8.GetString(bytes);
-                        break;
-                }
+                    FieldType.Integer => reader.ReadInt32(),
+                    FieldType.Double => reader.ReadDouble(),
+                    FieldType.Boolean => reader.ReadBoolean(),
+                    FieldType.String => Encoding.UTF8.GetString(reader.ReadBytes(reader.ReadInt16())),
+                    _ => throw new InvalidOperationException($"Unsupported field type {type}")
+                };
             }
 
-            return new Record(schema, values);
+            return new Record(schema, rid, values);
         }
+
+        // ---------------- DEBUG ----------------
 
         public override string ToString()
         {

@@ -20,7 +20,7 @@ namespace DB.Engine.Execution.Commands
             _columns = columns;
         }
 
-        public void Execute(DatabaseContext context)
+        public QueryResult Execute(DatabaseContext context)
         {
             var columnNames = new List<string>();
             var columnTypes = new List<FieldType>();
@@ -39,10 +39,15 @@ namespace DB.Engine.Execution.Commands
                 columnTypes,
                 nullable
             );
-
+            var sw = System.Diagnostics.Stopwatch.StartNew();
             context.TableManager.CreateTable(_tableName, schema);
+            sw.Stop();
 
-            Console.WriteLine($"Table '{_tableName}' created.");
+            return new QueryResult(
+                success: true,
+                message: $"Table '{_tableName}' created successfully",
+                execTime: sw.Elapsed.TotalMilliseconds
+            );
         }
 
         private static FieldType ParseType(string type)

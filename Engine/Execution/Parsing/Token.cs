@@ -9,17 +9,22 @@ namespace DB.Engine.Execution.Parsing
     public sealed class Token
     {
         public TokenType Type { get; }
-        public string Lexeme { get; }
+        public string Text { get; }
+        public object? Value { get; }
 
-        public Token(TokenType type, string lexeme)
+        public Token(TokenType type, string text)
         {
             Type = type;
-            Lexeme = lexeme;
+            Text = text;
+            Value = null;
         }
 
-        public override string ToString()
+        public Token(TokenType type, object value)
         {
-            return $"{Type}('{Lexeme}')";
+            Type = type;
+            Text = value.ToString()!;
+            Value = value;
         }
     }
+
 }

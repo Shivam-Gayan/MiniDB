@@ -44,24 +44,54 @@ namespace DB.Engine.Execution.Parsing
             if (Match(TokenType.Select))
                 return ParseSelect();
 
-            throw Error($"Unexpected token '{Peek().Lexeme}'");
+            if (Check(TokenType.Delete))
+                return ParseDelete();
+
+            if (Match(TokenType.Drop))
+            {
+                return ParseDropTable();
+            }
+
+            throw Error($"Unexpected token '{Peek().Text}'");
         }
 
         // ------------------- CREATE INDEX -------------------
+        private StatementNode ParseDelete()
+        {
+            Consume(TokenType.Delete, "Expected 'DELETE'");
+            Consume(TokenType.From, "Expected 'FROM' after DELETE");
 
+            string table = Consume(TokenType.Identifier, "Expected table name after FROM").Text;
+
+            WhereNode? where = null;
+            if (Match(TokenType.Where))
+                where = ParseWhere();
+
+            ConsumeOptional(TokenType.Semicolon);
+            return new DeleteNode(table, where);
+        }
+
+        private StatementNode ParseDropTable()
+        {
+            Consume(TokenType.Table, "Expected TABLE after DROP");
+            string table = Consume(TokenType.Identifier, "Expected table name").Text;
+            ConsumeOptional(TokenType.Semicolon);
+
+            return new DropTableNode(table);
+        }
         private StatementNode ParseCreateIndex()
         {
             Consume(TokenType.Index, "Expected INDEX after CREATE");
 
-            string indexName = Consume(TokenType.Identifier, "Expected index name").Lexeme;
+            string indexName = Consume(TokenType.Identifier, "Expected index name").Text;
 
             Consume(TokenType.From, "Expected FROM after index name");
 
-            string table = Consume(TokenType.Identifier, "Expected table name").Lexeme;
+            string table = Consume(TokenType.Identifier, "Expected table name").Text;
 
             Consume(TokenType.OpenParen, "Expected '('");
 
-            string column = Consume(TokenType.Identifier, "Expected column name").Lexeme;
+            string column = Consume(TokenType.Identifier, "Expected column name").Text;
 
             Consume(TokenType.CloseParen, "Expected ')'");
             ConsumeOptional(TokenType.Semicolon);
@@ -75,7 +105,7 @@ namespace DB.Engine.Execution.Parsing
         {
             Consume(TokenType.Into, "Expected INTO after INSERT");
 
-            string table = Consume(TokenType.Identifier, "Expected table name").Lexeme;
+            string table = Consume(TokenType.Identifier, "Expected table name").Text;
 
             Consume(TokenType.Values, "Expected VALUES");
 
@@ -103,7 +133,7 @@ namespace DB.Engine.Execution.Parsing
 
             Consume(TokenType.From, "Expected FROM");
 
-            string table = Consume(TokenType.Identifier, "Expected table name").Lexeme;
+            string table = Consume(TokenType.Identifier, "Expected table name").Text;
 
             WhereNode? where = null;
 
@@ -119,7 +149,7 @@ namespace DB.Engine.Execution.Parsing
         // ------------------- CREATE TABLE -------------------
         private StatementNode ParseCreateTable()
         {
-            string tableName = Consume(TokenType.Identifier, "Expected table name").Lexeme;
+            string tableName = Consume(TokenType.Identifier, "Expected table name").Text;
 
             Consume(TokenType.OpenParen, "Expected '(' after table name");
 
@@ -127,8 +157,8 @@ namespace DB.Engine.Execution.Parsing
 
             do
             {
-                string colName = Consume(TokenType.Identifier, "Expected column name").Lexeme;
-                string colType = Consume(TokenType.Identifier, "Expected column type").Lexeme;
+                string colName = Consume(TokenType.Identifier, "Expected column name").Text;
+                string colType = Consume(TokenType.Identifier, "Expected column type").Text;
 
                 columns.Add(new ColumnDefinition(colName, colType));
             }
@@ -145,7 +175,7 @@ namespace DB.Engine.Execution.Parsing
 
         private WhereNode ParseWhere()
         {
-            string column = Consume(TokenType.Identifier, "Expected column name").Lexeme;
+            string column = Consume(TokenType.Identifier, "Expected column name").Text;
 
             if (Match(TokenType.Equal))
                 return new BinaryExpression(column, ComparisonOperator.Equal, ParseLiteral());
@@ -179,19 +209,22 @@ namespace DB.Engine.Execution.Parsing
         {
             if (Match(TokenType.Number))
             {
-                var text = Previous().Lexeme;
-                return text.Contains('.')
-                    ? double.Parse(text)
-                    : int.Parse(text);
+                return Previous().Value!;
             }
 
             if (Match(TokenType.String))
             {
-                return Previous().Lexeme;
+                return Previous().Value!;
             }
 
-            throw Error("Expected literal value");
+            if (Match(TokenType.Boolean))
+            {
+                return Previous().Value!;
+            }
+
+            throw Error($"Expected literal value but found '{Peek().Text}'");
         }
+
 
         // ------------------- Helpers -------------------
 
@@ -249,7 +282,7 @@ namespace DB.Engine.Execution.Parsing
         private Exception Error(string message)
         {
             return new InvalidOperationException(
-                $"{message} at token '{Peek().Lexeme}'");
+                $"{message} at token '{Peek().Text}'");
         }
     }
 }

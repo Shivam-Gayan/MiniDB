@@ -22,19 +22,31 @@ namespace DB.Engine.Execution.Planning
                 CreateIndexNode ci => BuildCreateIndex(ci),
                 InsertNode ins => BuildInsert(ins),
                 SelectNode sel => BuildSelect(sel),
+                DeleteNode d => BuildDelete(d),
+                DropTableNode dt => BuildDropTable(dt),
                 _ => throw new NotSupportedException(
                     $"Unsupported statement type: {statement.GetType().Name}")
             };
         }
 
         // ------------------- Builders -------------------
-
+        private static ICommand BuildDelete(DeleteNode node)
+        {
+            return new DeleteCommand(
+                node.Table,
+                node.Where
+            );
+        }
         private static ICommand BuildCreateTable(CreateTableNode node)
         {
             return new CreateTableCommand(
                 node.TableName,
                 node.Columns
             );
+        }
+        private static ICommand BuildDropTable(DropTableNode node)
+        {
+            return new DropTableCommand(node.TableName);
         }
 
         private static ICommand BuildCreateIndex(CreateIndexNode node)

@@ -39,8 +39,12 @@ namespace DB.Engine.Execution
         {
             var ctx = GetCtx();
             var rm = new RecordManager(ctx);
-            var record = rm.BuildRecord(tableName, values);
-            return rm.Insert(tableName, record);
+            var schema = ctx.TableManager.GetSchema(tableName) ?? throw new InvalidOperationException($"Table '{tableName}' does not exist.");
+
+            var typed = rm.BuildRecordValues(tableName, values);
+            var rid = ctx.TableManager.Insert(tableName, schema, typed);
+
+            return rid;
         }
 
         public IEnumerable<Record> SelectAll(string tableName)

@@ -20,6 +20,8 @@ namespace DB.Engine.Execution.Parsing
         Where,
         Between,
         And,
+        Drop,
+        Delete,
 
         // Symbols
         Star,          // *
@@ -39,6 +41,8 @@ namespace DB.Engine.Execution.Parsing
         Identifier,
         Number,
         String,
+        Boolean,
+
 
         // End
         EOF

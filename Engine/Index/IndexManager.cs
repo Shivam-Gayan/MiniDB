@@ -29,6 +29,44 @@ namespace DB.Engine.Index
 
         private static string MakeKey(string tableName, string columnName) => $" {tableName}.{columnName}";
 
+        public IReadOnlyList<(string Table, string Column)> ListIndexes()
+        {
+            var result = new List<(string, string)>();
+
+            foreach (var key in _indexes.Keys)
+            {
+                // Expected format: table.column
+                var parts = key.Split('.', 2);
+
+                if (parts.Length == 2)
+                {
+                    result.Add((parts[0], parts[1]));
+                }
+            }
+
+            return result;
+        }
+
+        public IEnumerable<RID> RangeSearch(
+            string table,
+            string column,
+            object? low,
+            bool lowInclusive,
+            object? high,
+            bool highInclusive)
+        {
+            var keyStr = $"{table}.{column}";
+            if (!_indexes.TryGetValue(keyStr, out var tree))
+                yield break;
+
+            var lowKey = low != null ? Key.FromObject(low) : null;
+            var highKey = high != null ? Key.FromObject(high) : null;
+
+            foreach (var rid in tree.RangeScan(lowKey, lowInclusive, highKey, highInclusive))
+                yield return rid;
+        }
+
+
         /// <summary>
         /// Create a new index on a table column.
         /// </summary>
@@ -42,6 +80,16 @@ namespace DB.Engine.Index
             }
 
             _indexes[key] = new BPlusTree(_treeOrder);
+        }
+
+        public void DropIndexesForTable(string table)
+        {
+            var keys = _indexes.Keys
+                .Where(k => k.StartsWith(table + ".", StringComparison.OrdinalIgnoreCase))
+                .ToList();
+
+            foreach (var k in keys)
+                _indexes.Remove(k);
         }
 
         /// <summary>

@@ -136,6 +136,9 @@ namespace DB.Engine.Execution.Parsing
                 "WHERE" => new Token(TokenType.Where, text),
                 "BETWEEN" => new Token(TokenType.Between, text),
                 "AND" => new Token(TokenType.And, text),
+                "DROP" => new Token(TokenType.Drop, text),
+                "TRUE" => new Token(TokenType.Boolean, true),
+                "FALSE" => new Token(TokenType.Boolean, false),
                 _ => new Token(TokenType.Identifier, text)
             };
         }
@@ -159,7 +162,14 @@ namespace DB.Engine.Execution.Parsing
                 }
             }
 
-            return new Token(TokenType.Number, sb.ToString());
+            string text = sb.ToString();
+
+            object value = text.Contains('.')
+                ? double.Parse(text)
+                : int.Parse(text);
+
+            return new Token(TokenType.Number, value);
+
         }
 
         private Token ReadString()
@@ -176,7 +186,9 @@ namespace DB.Engine.Execution.Parsing
                 throw new InvalidOperationException("Unterminated string literal");
 
             Advance(); // closing quote
-            return new Token(TokenType.String, sb.ToString());
+            string text = sb.ToString();
+            return new Token(TokenType.String, text);
+
         }
 
         private char Advance() => _input[_pos++];

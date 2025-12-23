@@ -8,28 +8,27 @@ using System.Threading.Tasks;
 
 namespace DB.Engine.Execution.Commands
 {
-    public sealed class CreateIndexCommand : ICommand
+    public sealed class DropTableCommand : ICommand
     {
         private readonly string _table;
-        private readonly string _column;
 
-        public CreateIndexCommand(string table, string column)
+        public DropTableCommand(string table)
         {
             _table = table;
-            _column = column;
         }
 
         public QueryResult Execute(DatabaseContext context)
         {
             var sw = Stopwatch.StartNew();
 
-            context.IndexManager.CreateIndex(_table, _column);
+            context.TableManager.DropTable(_table);
+            context.IndexManager.DropIndexesForTable(_table);
 
             sw.Stop();
 
             return new QueryResult(
                 success: true,
-                message: $"Index created on {_table}({_column})",
+                message: $"Table '{_table}' dropped",
                 execTime: sw.Elapsed.TotalMilliseconds
             );
         }

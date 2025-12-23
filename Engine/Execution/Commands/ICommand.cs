@@ -12,6 +12,6 @@ namespace DB.Engine.Execution.Commands
     /// </summary>
     public interface ICommand
     {
-        void Execute(DatabaseContext context);
+        QueryResult Execute(DatabaseContext context);
     }
 }
