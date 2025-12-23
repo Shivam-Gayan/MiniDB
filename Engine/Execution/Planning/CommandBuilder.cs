@@ -18,15 +18,24 @@ namespace DB.Engine.Execution.Planning
         {
             return statement switch
             {
-                CreateIndexNode createIndex => BuildCreateIndex(createIndex),
-                InsertNode insert => BuildInsert(insert),
-                SelectNode select => BuildSelect(select),
+                CreateTableNode ct => BuildCreateTable(ct),
+                CreateIndexNode ci => BuildCreateIndex(ci),
+                InsertNode ins => BuildInsert(ins),
+                SelectNode sel => BuildSelect(sel),
                 _ => throw new NotSupportedException(
                     $"Unsupported statement type: {statement.GetType().Name}")
             };
         }
 
         // ------------------- Builders -------------------
+
+        private static ICommand BuildCreateTable(CreateTableNode node)
+        {
+            return new CreateTableCommand(
+                node.TableName,
+                node.Columns
+            );
+        }
 
         private static ICommand BuildCreateIndex(CreateIndexNode node)
         {

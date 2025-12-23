@@ -21,6 +21,10 @@ namespace DB.Engine.Storage
 
 
         // Methods
+        public IReadOnlyList<string> ListTables()
+        {
+            return _tables.Keys.ToList();
+        }
 
         public void CreateTable(string tableName, Schema schema)
         {
