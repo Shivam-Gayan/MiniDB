@@ -1,4 +1,5 @@
-﻿using DB.Engine.Storage;
+﻿using DB.Engine.Index;
+using DB.Engine.Storage;
 
 namespace DB.Engine.Database
 {
@@ -13,15 +14,17 @@ namespace DB.Engine.Database
 
         public FileManager FileManager { get; }
         public TableManager TableManager { get; }
+        public IndexManager IndexManager { get; }
 
         public DatabaseContext(string dbName, string dbPath)
         {
-            DatabaseName = dbName ?? throw new ArgumentNullException(nameof(dbName)); ;
+            DatabaseName = dbName ?? throw new ArgumentNullException(nameof(dbName));
             DatabasePath = dbPath ?? throw new ArgumentNullException(nameof(dbPath));
 
             string dataFile = Path.Combine(dbPath, $"{dbName}_data.db");
             FileManager = new FileManager(dataFile);
             TableManager = new TableManager(FileManager);
+            IndexManager = new IndexManager(32);
         }
 
         /// <summary>

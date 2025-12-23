@@ -1,4 +1,5 @@
 ﻿using DB.Engine.Database;
+using DB.Engine.Index;
 using DB.Engine.Storage;
 
 namespace DB.Engine.Execution
@@ -12,17 +13,19 @@ namespace DB.Engine.Execution
     /// </remarks>
     /// <param name="tableManager">TableManager reference for accessing table metadata and pages.</param>
     /// <param name="fileManager">FileManager reference for reading and writing page data.</param>
-    public class RecordManager(TableManager tableManager, FileManager fileManager)
+    public class RecordManager(TableManager tableManager, FileManager fileManager, IndexManager indexManager)
     {
         private readonly TableManager _tableManager = tableManager;
         private readonly FileManager _fileManager = fileManager;
+        private readonly IndexManager _indexManager = indexManager;
 
-        public RecordManager(DatabaseContext dbContext) : this(dbContext.TableManager, dbContext.FileManager)
+        public RecordManager(DatabaseContext dbContext): this(
+        dbContext?.TableManager ?? throw new ArgumentNullException(nameof(dbContext)),
+        dbContext.FileManager,
+        dbContext.IndexManager)
         {
-            ArgumentNullException.ThrowIfNull(dbContext);
-            _tableManager = dbContext.TableManager ?? throw new InvalidOperationException("DatabaseContext.TableManager is null.");
-            _fileManager = dbContext.FileManager ?? throw new InvalidOperationException("DatabaseContext.FileManager is null.");
         }
+
 
 
 
@@ -55,6 +58,17 @@ namespace DB.Engine.Execution
 
             // Delegate actual insertion to TableManager (which handles pages, allocation, meta updates)
             var rid = _tableManager.Insert(tableName, record);
+
+            for (int i = 0; i < schema.Columns.Count; i++)
+            {
+                string column = schema.Columns[i];
+
+                if (_indexManager.HasIndex(tableName, column))
+                {
+                    var value = record.Values[i];
+                    _indexManager.Insert(tableName, column, value!, rid);
+                }
+            }
 
             return rid;
         }
@@ -131,8 +145,26 @@ namespace DB.Engine.Execution
                 return false;
             }
 
+            // Read record first (needed for index cleanup)
+            var record = Read(tableName, rid);
+            if (record == null)
+                return false;
+
             // Perform delete (Page.DeleteRecord updates slot to mark deleted)
             page.DeleteRecord(rid.SlotId);
+
+            var schema = _tableManager.GetSchema(tableName) ?? throw new InvalidOperationException($"Schema for table '{tableName}' not found.");
+
+            for (int i = 0; i < schema.Columns.Count; i++)
+            {
+                string column = schema.Columns[i];
+
+                if (_indexManager.HasIndex(tableName, column))
+                {
+                    var value = record.Values[i];
+                    _indexManager.Delete(tableName, column, value!, rid);
+                }
+            }
 
             // Persist page back to disk
             _fileManager.WritePage(rid.PageId, page.GetBytes());
