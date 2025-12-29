@@ -131,7 +131,15 @@ namespace DB.Engine.Index
 
             return result;
         }
+        public void DropIndexesForTable(string table)
+        {
+            var keys = _indexes.Keys
+                .Where(k => k.StartsWith(table + ".", StringComparison.OrdinalIgnoreCase))
+                .ToList();
 
+            foreach (var k in keys)
+                _indexes.Remove(k);
+        }
 
     }
 }

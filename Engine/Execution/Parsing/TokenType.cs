@@ -20,6 +20,7 @@ namespace DB.Engine.Execution.Parsing
         Where,
         Between,
         And,
+        Drop,
 
         // Symbols
         Star,          // *

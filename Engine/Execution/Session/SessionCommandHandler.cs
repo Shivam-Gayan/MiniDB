@@ -139,6 +139,31 @@ namespace DB.Engine.Execution.Session
 
                 return true;
             }
+            // DROP INDEX table.column
+            if (text.StartsWith("drop index ", StringComparison.OrdinalIgnoreCase))
+            {
+                var target = text.Substring("drop index ".Length).Trim();
+                var parts = target.Split('.', 2);
+
+                if (parts.Length != 2)
+                {
+                    Console.WriteLine("Usage: DROP INDEX table.column");
+                    return true;
+                }
+
+                try
+                {
+                    var ctx = dbManager.GetActiveContext();
+                    ctx.IndexManager.DropIndex(parts[0], parts[1]);
+                    Console.WriteLine($"Index {parts[0]}({parts[1]}) dropped.");
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Error: {ex.Message}");
+                }
+
+                return true;
+            }
 
 
             // Not a session command

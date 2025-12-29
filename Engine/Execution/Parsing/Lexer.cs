@@ -136,6 +136,7 @@ namespace DB.Engine.Execution.Parsing
                 "WHERE" => new Token(TokenType.Where, text),
                 "BETWEEN" => new Token(TokenType.Between, text),
                 "AND" => new Token(TokenType.And, text),
+                "DROP" => new Token(TokenType.Drop, text),
                 _ => new Token(TokenType.Identifier, text)
             };
         }

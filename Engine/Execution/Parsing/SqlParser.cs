@@ -36,7 +36,11 @@ namespace DB.Engine.Execution.Parsing
 
                 throw Error("Expected TABLE or INDEX after CREATE");
             }
-                
+            
+            if (Match(TokenType.Drop))
+            {
+                return ParseDropTable();
+            }
 
             if (Match(TokenType.Insert))
                 return ParseInsert();
@@ -46,12 +50,20 @@ namespace DB.Engine.Execution.Parsing
 
             throw Error($"Unexpected token '{Peek().Lexeme}'");
         }
+        // ------------------- DROP TABLE -------------------
+
+        private StatementNode ParseDropTable()
+        {
+            Consume(TokenType.Table, "Expected TABLE after DROP");
+            string table = Consume(TokenType.Identifier, "Expected table name").Lexeme;
+            ConsumeOptional(TokenType.Semicolon);
+            return new DropTableNode(table);
+        }
 
         // ------------------- CREATE INDEX -------------------
 
         private StatementNode ParseCreateIndex()
         {
-            Consume(TokenType.Index, "Expected INDEX after CREATE");
 
             string indexName = Consume(TokenType.Identifier, "Expected index name").Lexeme;
 

@@ -22,12 +22,17 @@ namespace DB.Engine.Execution.Planning
                 CreateIndexNode ci => BuildCreateIndex(ci),
                 InsertNode ins => BuildInsert(ins),
                 SelectNode sel => BuildSelect(sel),
+                DropTableNode dt => BuildDropTable(dt),
                 _ => throw new NotSupportedException(
                     $"Unsupported statement type: {statement.GetType().Name}")
             };
         }
 
         // ------------------- Builders -------------------
+        private static ICommand BuildDropTable(DropTableNode node)
+        {
+            return new DropTableCommand(node.TableName);
+        }
 
         private static ICommand BuildCreateTable(CreateTableNode node)
         {
