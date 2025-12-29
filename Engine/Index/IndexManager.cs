@@ -113,5 +113,25 @@ namespace DB.Engine.Index
 
             return tree.Search(value);
         }
+
+        public IReadOnlyList<(string Table, string Column)> ListIndexes()
+        {
+            var result = new List<(string, string)>();
+
+            foreach (var key in _indexes.Keys)
+            {
+                // Expected format: table.column
+                var parts = key.Split('.', 2);
+
+                if (parts.Length == 2)
+                {
+                    result.Add((parts[0], parts[1]));
+                }
+            }
+
+            return result;
+        }
+
+
     }
 }

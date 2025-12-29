@@ -10,7 +10,7 @@ namespace DB.Engine.Execution.Planning
 {
     /// <summary>
     /// Converts AST nodes into executable Commands.
-    /// This is the query planner (very simple version).
+    /// This is the query planner 
     /// </summary>
     public static class CommandBuilder
     {

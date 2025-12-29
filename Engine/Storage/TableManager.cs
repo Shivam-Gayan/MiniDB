@@ -332,12 +332,26 @@ namespace DB.Engine.Storage
         {
             return typeName.ToLower() switch
             {
-                "int32" or "int" => FieldType.Integer,
+                "int32" or "int" or "integer" => FieldType.Integer,
                 "string" => FieldType.String,
                 "bool" or "boolean" => FieldType.Boolean,
                 "double" => FieldType.Double,
                 _ => throw new Exception($"Unknown field type: {typeName}")
             };
         }
+
+        public void DropTable(string tableName)
+        {
+            if (!_tables.ContainsKey(tableName))
+                throw new InvalidOperationException($"Table '{tableName}' does not exist.");
+
+            // delete table pages (depends on your implementation)
+            
+            VacuumTable(tableName);
+
+            _tables.Remove(tableName);
+            SaveCatalog();
+        }
+
     }
 }
