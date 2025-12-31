@@ -141,5 +141,18 @@ namespace DB.Engine.Index
                 _indexes.Remove(k);
         }
 
+        public IEnumerable<RID> RangeSearch(string table, string column, object? low, bool lowInclusive, object? high, bool highInclusive)
+        {
+            var keyStr = $"{table}.{column}";
+            if (!_indexes.TryGetValue(keyStr, out var tree))
+                yield break;
+
+            var lowKey = low != null ? Key.FromObject(low) : null;
+            var highKey = high != null ? Key.FromObject(high) : null;
+
+            foreach (var rid in tree.RangeScan(lowKey, lowInclusive, highKey, highInclusive))
+            { yield return rid; }
+        }
+
     }
 }
