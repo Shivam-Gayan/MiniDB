@@ -401,6 +401,54 @@ namespace DB.Engine.Index
             }
         }
 
+        public IEnumerable<RID> RangeScan(Key? low, bool lowInclusive, Key? high, bool highInclusive)
+        {
+            if (_root == null)
+                yield break;
+
+            // 1️ Find starting leaf
+            var node = (low == null)
+                ? LeftMostLeaf()
+                : FindLeaf(low);
+
+            while (node != null)
+            {
+                for (int i = 0; i < node.Keys.Count; i++)
+                {
+                    var key = node.Keys[i];
+
+                    // Check lower bound
+                    if (low != null)
+                    {
+                        int cmpLow = key.CompareTo(low);
+                        if (cmpLow < 0 || (!lowInclusive && cmpLow == 0))
+                            continue;
+                    }
+
+                    // Check upper bound
+                    if (high != null)
+                    {
+                        int cmpHigh = key.CompareTo(high);
+                        if (cmpHigh > 0 || (!highInclusive && cmpHigh == 0))
+                            yield break; // stop scan
+                    }
+
+                    foreach (var rid in node.Values[i])
+                        yield return rid;
+                }
+
+                node = node.Next; // move to next leaf
+            }
+        }
+
+        private LeafNode LeftMostLeaf()
+        {
+            var node = _root;
+            while (node is InternalNode internalNode)
+                node = internalNode.Children[0];
+
+            return (LeafNode)node;
+        }
 
     }
 }
