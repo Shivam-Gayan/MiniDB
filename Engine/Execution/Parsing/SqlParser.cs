@@ -36,7 +36,10 @@ namespace DB.Engine.Execution.Parsing
 
                 throw Error("Expected TABLE or INDEX after CREATE");
             }
-            
+            if (Match(TokenType.Update)) return ParseUpdate();
+
+            if (Match(TokenType.Delete)) return ParseDelete();
+
             if (Match(TokenType.Drop))
             {
                 return ParseDropTable();
@@ -49,6 +52,46 @@ namespace DB.Engine.Execution.Parsing
                 return ParseSelect();
 
             throw Error($"Unexpected token '{Peek().Lexeme}'");
+        }
+
+        // ------------------- Update Record -------------------
+
+        private StatementNode ParseUpdate()
+        {
+            string table = Consume(TokenType.Identifier, "Expected table name after UPDATE").Lexeme;
+
+            Consume(TokenType.Set, "Expected SET after table name");
+
+            string column = Consume(TokenType.Identifier, "Expected column name").Lexeme;
+            Consume(TokenType.Equal, "Expected '=' after column name");
+            object value = ParseLiteral();
+
+            WhereNode? where = null;
+            if (Match(TokenType.Where))
+            {
+                where = ParseWhere();
+            }
+
+            ConsumeOptional(TokenType.Semicolon);
+
+            return new UpdateNode(table, column, value, where);
+        }
+
+        // ------------------- Delete Record -------------------
+        private StatementNode ParseDelete()
+        {
+            Consume(TokenType.From, "Expected FROM after DELETE");
+            string table = Consume(TokenType.Identifier, "Expected table name").Lexeme;
+
+            WhereNode? where = null;
+            if (Match(TokenType.Where))
+            {
+                where = ParseWhere();
+            }
+
+            ConsumeOptional(TokenType.Semicolon);
+
+            return new DeleteNode(table, where);
         }
         // ------------------- DROP TABLE -------------------
 
@@ -67,7 +110,7 @@ namespace DB.Engine.Execution.Parsing
 
             string indexName = Consume(TokenType.Identifier, "Expected index name").Lexeme;
 
-            Consume(TokenType.From, "Expected FROM after index name");
+            Consume(TokenType.On, "Expected ON after index name");
 
             string table = Consume(TokenType.Identifier, "Expected table name").Lexeme;
 
@@ -200,6 +243,15 @@ namespace DB.Engine.Execution.Parsing
             if (Match(TokenType.String))
             {
                 return Previous().Lexeme;
+            }
+            if (Match(TokenType.True))
+            {
+                return true;
+            }
+
+            if (Match(TokenType.False))
+            {
+                return false;
             }
 
             throw Error("Expected literal value");

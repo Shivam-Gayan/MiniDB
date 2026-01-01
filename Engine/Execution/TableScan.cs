@@ -67,5 +67,41 @@ namespace DB.Engine.Execution
                 }
             }
         }
+
+        public IEnumerable<(Record Record, RID Rid)> Scan(string tableName)
+        {
+            if (!_tableManager.TableExists(tableName))
+            {
+                throw new ArgumentException($"Table '{tableName}' does not exist.");
+            }
+
+            var schema = _tableManager.GetSchema(tableName)
+                ?? throw new InvalidOperationException("Schema not found.");
+
+            List<int> totalPages = _tableManager.GetPages(tableName);
+
+            foreach (var pageId in totalPages)
+            {
+                byte[] pageData = _fileManager.ReadPage(pageId);
+                var page = new Page();
+                page.Load(pageData);
+
+                for (int slotId = 0; slotId < page.Header.SlotCount; slotId++)
+                {
+                    Record? record = null;
+                    try
+                    {
+                        record = page.ReadRecord(schema, slotId);
+                    }
+                    catch
+                    {
+                        continue; // skip deleted
+                    }
+
+                    // Yield the Record AND the RID
+                    yield return (record, new RID(pageId, slotId));
+                }
+            }
+        }
     }
 }

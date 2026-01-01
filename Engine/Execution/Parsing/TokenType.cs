@@ -21,6 +21,12 @@ namespace DB.Engine.Execution.Parsing
         Between,
         And,
         Drop,
+        True,
+        False,
+        On,
+        Delete,
+        Update,
+        Set,
 
         // Symbols
         Star,          // *
