@@ -13,10 +13,7 @@ namespace DB.Engine.Execution.Session
     /// </summary>
     public static class SessionCommandHandler
     {
-        public static bool TryHandle(
-            string input,
-            DatabaseManager dbManager,
-            out bool shouldExit)
+        public static bool TryHandle(string input,DatabaseManager dbManager,out bool shouldExit)
         {
             shouldExit = false;
 
@@ -164,7 +161,23 @@ namespace DB.Engine.Execution.Session
 
                 return true;
             }
+            // VACUUM (Reclaim space in the current database)
+            if (Equals(text, "vacuum"))
+            {
+                try
+                {
+                    // Get the context for the currently selected database (e.g., 'testdb')
+                    var ctx = dbManager.GetActiveContext();
 
+                    // Trigger the VacuumAll method implemented in TableManager
+                    ctx.TableManager.VacuumAll();
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Error: {ex.Message}");
+                }
+                return true;
+            }
 
             // Not a session command
             return false;
