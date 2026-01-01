@@ -141,6 +141,8 @@ namespace DB.Engine.Execution.Parsing
                 "FALSE" => new Token(TokenType.False, text),
                 "ON" => new Token(TokenType.On, text),
                 "DELETE" => new Token(TokenType.Delete, text),
+                "UPDATE" => new Token(TokenType.Update, text),
+                "SET" => new Token(TokenType.Set, text),
                 _ => new Token(TokenType.Identifier, text)
             };
         }

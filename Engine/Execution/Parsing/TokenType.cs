@@ -25,6 +25,8 @@ namespace DB.Engine.Execution.Parsing
         False,
         On,
         Delete,
+        Update,
+        Set,
 
         // Symbols
         Star,          // *

@@ -36,6 +36,7 @@ namespace DB.Engine.Execution.Parsing
 
                 throw Error("Expected TABLE or INDEX after CREATE");
             }
+            if (Match(TokenType.Update)) return ParseUpdate();
 
             if (Match(TokenType.Delete)) return ParseDelete();
 
@@ -51,6 +52,29 @@ namespace DB.Engine.Execution.Parsing
                 return ParseSelect();
 
             throw Error($"Unexpected token '{Peek().Lexeme}'");
+        }
+
+        // ------------------- Update Record -------------------
+
+        private StatementNode ParseUpdate()
+        {
+            string table = Consume(TokenType.Identifier, "Expected table name after UPDATE").Lexeme;
+
+            Consume(TokenType.Set, "Expected SET after table name");
+
+            string column = Consume(TokenType.Identifier, "Expected column name").Lexeme;
+            Consume(TokenType.Equal, "Expected '=' after column name");
+            object value = ParseLiteral();
+
+            WhereNode? where = null;
+            if (Match(TokenType.Where))
+            {
+                where = ParseWhere();
+            }
+
+            ConsumeOptional(TokenType.Semicolon);
+
+            return new UpdateNode(table, column, value, where);
         }
 
         // ------------------- Delete Record -------------------

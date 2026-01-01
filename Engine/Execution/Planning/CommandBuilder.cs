@@ -24,6 +24,7 @@ namespace DB.Engine.Execution.Planning
                 SelectNode sel => BuildSelect(sel),
                 DropTableNode dt => BuildDropTable(dt),
                 DeleteNode del => BuildDelete(del),
+                UpdateNode up => BuildUpdate(up),
 
                 _ => throw new NotSupportedException(
                     $"Unsupported statement type: {statement.GetType().Name}")
@@ -32,6 +33,15 @@ namespace DB.Engine.Execution.Planning
 
         // ------------------- Builders -------------------
 
+        private static ICommand BuildUpdate(UpdateNode node)
+        {
+            return new UpdateCommand(
+                node.TableName,
+                node.Column,
+                node.Value,
+                node.Where
+            );
+        }
         private static ICommand BuildDelete(DeleteNode node)
         {
             return new DeleteCommand(
