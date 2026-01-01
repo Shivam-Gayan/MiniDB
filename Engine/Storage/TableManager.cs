@@ -1,4 +1,5 @@
-﻿using System;
+﻿using DB.Engine.Index;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection.Metadata.Ecma335;
@@ -11,14 +12,21 @@ namespace DB.Engine.Storage
     {
         private readonly FileManager _fileManager;
         private readonly Dictionary<string, (Schema schema, List<int> pages)> _tables; // Table name to list of page IDs
+        private readonly Dictionary<string, IndexFileHandle> _indexFiles;
+
 
         public TableManager(FileManager fileManager)
         {
             _fileManager = fileManager;
+            _indexFiles = [];
             _tables = [];
             LoadCatalog();
         }
 
+        public IEnumerable<string> GetTableNames()
+        {
+            return _tables.Keys;
+        }
 
         // Methods
         public IReadOnlyList<string> ListTables()
@@ -352,6 +360,8 @@ namespace DB.Engine.Storage
             _tables.Remove(tableName);
             SaveCatalog();
         }
+
+        private readonly Dictionary<string, IndexFileHandle> _indexHandles = new();
 
     }
 }

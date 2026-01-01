@@ -7,6 +7,6 @@ namespace DB.Engine.Storage
         public const int PageSize = 4096; // 4 KB
         public const int HeaderSize = 32; // bytes reserved for page header
         public const string DefaultDbFile = "database.db";
-
+        public const int DefaultIndexOrder = 32;
     }
 }

@@ -1,453 +1,1019 @@
-﻿using DB.Engine.Storage;
-
+﻿using System.Buffers.Binary;
+using System.Text;
+using DB.Engine.Storage;
+using DB.Engine.Indexing;
 
 namespace DB.Engine.Index
 {
-    /// <summary>
-    /// Minimal B+Tree skeleton (in-memory).
-    /// This file implements:
-    /// - constructor
-    /// - FindLeaf (walks from root to the leaf that should contain a key)
-    /// - small debug helper DumpLeafForKey(...) to inspect the leaf
-    /// 
-    /// will add Insert/Search/Range/Delete below this class.
-    /// </summary>
-    public class BPlusTree
+    public sealed class BPlusTree
     {
-        /// <summary>
-        /// Order = maximum number of children in an internal node.
-        /// Must be >= 3. (Internal node max keys = Order - 1)
-        /// </summary>
-        public int Order { get; }
+        private readonly FileManager _fm;
+        private readonly int _order;
 
-        // Root node reference (either InternalNode or LeafNode)
-        private Node _root;
+        public int RootPageId { get; private set; }
 
-        public BPlusTree(int order)
+        private const int PayloadOffset =
+            DbOptions.HeaderSize + IndexNodeHeader.Size;
+
+        public BPlusTree(FileManager fm, int rootPageId, int order)
         {
-            if (order < 3)
-                throw new ArgumentException("B+Tree order must be at least 3.", nameof(order));
-            Order = order;
-            _root = new LeafNode();
+            _fm = fm;
+            _order = order;
+            RootPageId = rootPageId;
+            ValidateRoot();
+        }
+
+        // ---------------- PAGE HELPERS ----------------
+        private void ValidateRoot()
+        {
+            var root = Load(RootPageId);
+
+            IndexNodeHeader.Read(
+                root.Buffer,
+                out bool isLeaf,
+                out short keyCount,
+                out int parentPid
+            );
+
+            if (keyCount < 0)
+                throw new InvalidOperationException("Corrupted index root");
+
+            if (parentPid != -1)
+                throw new InvalidOperationException("Root node has a parent pointer");
         }
 
 
-        /// <summary>
-        /// Public helper for tests: returns a human-readable representation
-        /// of the keys present in the leaf that would contain rawKey.
-        /// Useful to check FindLeaf navigation.
-        /// </summary>
-        public string DumpLeafForKey(Key rawKey)
+        private Page Load(int pageId)
         {
-            var key = Key.FromObject(rawKey);
-            var leaf = FindLeaf(key);
-            if (leaf.Keys.Count == 0) return "(empty leaf)";
-            var parts = new List<string>();
-            for (int i = 0; i < leaf.Keys.Count; i++)
+            var p = new Page();
+            p.Load(_fm.ReadPage(pageId));
+            return p;
+        }
+
+        private void Flush(Page p)
+        {
+            _fm.WritePage(p.PageId, p.Buffer);
+        }
+
+        private int AllocateNode(bool isLeaf, int parentPid)
+        {
+            int pid = _fm.AllocatePage(PageType.Index);
+            var p = Load(pid);
+
+            IndexNodeHeader.Write(
+                p.Buffer,
+                isLeaf,
+                keyCount: 0,
+                parentPageId: parentPid
+            );
+
+            // leaf links init
+            if (isLeaf)
             {
-                parts.Add(leaf.Keys[i].ToString());
+                BinaryPrimitives.WriteInt32LittleEndian(
+                    p.Buffer.AsSpan(PayloadOffset), -1);
+                BinaryPrimitives.WriteInt32LittleEndian(
+                    p.Buffer.AsSpan(PayloadOffset + 4), -1);
             }
-            return string.Join(", ", parts);
+
+            Flush(p);
+            return pid;
         }
 
-        /// <summary>
-        /// Find the leaf node that should contain the supplied key.
-        /// Does not modify the tree.
-        /// </summary>
-        private LeafNode FindLeaf(Key key)
+        // ---------------- KEY CODEC ----------------
+
+        private void WriteKey(byte[] buffer, ref int offset, Key key)
         {
-            Node node = _root;
+            buffer[offset++] = (byte)key.Type;
 
-            while (!node.IsLeaf)
+            switch (key.Type)
             {
-                var inode = (InternalNode)node;
+                case FieldType.Integer:
+                    BinaryPrimitives.WriteInt32LittleEndian(
+                        buffer.AsSpan(offset), (int)key.Value);
+                    offset += 4;
+                    break;
 
-                int childIndex = LocateChildIndex(inode.Keys, key);
-                node = inode.Children[childIndex];
+                case FieldType.Double:
+                    BinaryPrimitives.WriteDoubleLittleEndian(
+                        buffer.AsSpan(offset), (double)key.Value);
+                    offset += 8;
+                    break;
+
+                case FieldType.Boolean:
+                    buffer[offset++] = (byte)((bool)key.Value ? 1 : 0);
+                    break;
+
+                case FieldType.String:
+                    var bytes = Encoding.UTF8.GetBytes((string)key.Value);
+                    BinaryPrimitives.WriteInt16LittleEndian(
+                        buffer.AsSpan(offset), (short)bytes.Length);
+                    offset += 2;
+                    bytes.CopyTo(buffer.AsSpan(offset));
+                    offset += bytes.Length;
+                    break;
+
+                default:
+                    throw new InvalidOperationException($"Unsupported key type {key.Type}");
             }
-
-            return (LeafNode)node;
         }
 
 
-        /// <summary>
-        /// Locate the child index within an internal node for a given key.
-        /// Returns an index in range [0 .. keys.Count] representing children[index].
-        /// Behavior: if key equals a separator key, we choose the right-side child (index = keyIndex + 1).
-        /// </summary>
-        private static int LocateChildIndex(List<Key> Keys, Key key)
+        private static Key ReadKey(ReadOnlySpan<byte> buf, ref int off)
         {
-            // Binary search: find first key >= target; child index = position where we'd descend
-            int lo = 0, hi = Keys.Count - 1;
+            var type = (FieldType)buf[off++];
 
-            while (lo <= hi)
+            switch (type)
             {
-                int mid = (lo + hi) >> 1;
-                int cmp = key.CompareTo(Keys[mid]);
-                if (cmp < 0) hi = mid - 1;
-                else if (cmp > 0) lo = mid + 1;
-                else
-                {
-                    // Equal: go to right child
-                    return mid + 1;
-                }
+                case FieldType.Integer:
+                    var iVal = BinaryPrimitives.ReadInt32LittleEndian(buf.Slice(off, 4));
+                    off += 4;
+                    return new Key(type, iVal);
+
+                case FieldType.Double:
+                    var dVal = BinaryPrimitives.ReadDoubleLittleEndian(buf.Slice(off, 8));
+                    off += 8; 
+                    return new Key(type, dVal);
+
+                case FieldType.Boolean:
+                    return new Key(type, buf[off++] == 1);
+
+                case FieldType.String:
+                    return ReadStringKey(buf, ref off);
+
+                default:
+                    throw new InvalidOperationException($"Unknown Key Type: {type}");
             }
-            return lo;
         }
+
+        private static Key ReadStringKey(ReadOnlySpan<byte> buf, ref int off)
+        {
+            ushort len = BinaryPrimitives.ReadUInt16LittleEndian(buf.Slice(off, 2));
+            off += 2;
+            var s = Encoding.UTF8.GetString(buf.Slice(off, len));
+            off += len;
+            return new Key(FieldType.String, s);
+        }
+
+        // ---------------- TREE NAVIGATION ----------------
+
+        private int FindLeafPage(Key key)
+        {
+            int current = RootPageId;
+
+            while (true)
+            {
+                var p = Load(current);
+                IndexNodeHeader.Read(p.Buffer, out bool isLeaf, out short keyCount, out _);
+
+                if (isLeaf)
+                    return current;
+
+                current = ChooseChild(p, key, keyCount);
+            }
+        }
+
+        private int ChooseChild(Page p, Key key, short keyCount)
+        {
+            int off = PayloadOffset;
+
+            for (int i = 0; i < keyCount; i++)
+            {
+                // 1. Read the Child Pointer
+                int childPid = BinaryPrimitives.ReadInt32LittleEndian(p.Buffer.AsSpan(off));
+                off += 4;
+
+                // 2. Read the Key
+                var k = ReadKey(p.Buffer, ref off);
+
+                // 3. Comparison
+                if (key.CompareTo(k) < 0)
+                    return childPid;
+            }
+
+            // 4. The Right-Most Child is stored at the very END
+            return BinaryPrimitives.ReadInt32LittleEndian(p.Buffer.AsSpan(off));
+        }
+
+        // ---------------- INSERT ----------------
 
         public void Insert(object rawKey, RID rid)
         {
             var key = Key.FromObject(rawKey);
-            var leaf = FindLeaf(key);
+            int leafPid = FindLeafPage(key);
 
-            InsertIntoLeaf(leaf, key, rid);
-
-            if (leaf.Keys.Count >= Order)
-            {
-                SplitLeaf(leaf);
-            }
+            InsertIntoLeaf(leafPid, key, rid);
         }
 
-        private void InsertIntoLeaf(LeafNode leaf, Key key, RID rid)
+        private void InsertIntoLeaf(int leafPid, Key key, RID rid)
         {
-            // Binary search to find insert position 
-            int lo = 0, hi = leaf.Keys.Count - 1;
+            var p = Load(leafPid);
+            IndexNodeHeader.Read(p.Buffer, out _, out short keyCount, out int parentPid);
 
-            while (lo <= hi)
+            // Read existing entries
+            var entries = ReadLeafEntries(p, keyCount);
+
+            InsertEntry(entries, key, rid);
+
+            if (entries.Count < _order)
             {
-                int mid = (lo + hi) >> 1;
-                int cmp = key.CompareTo(leaf.Keys[mid]);
-
-                if (cmp < 0) hi = mid - 1;
-                else if (cmp > 0) lo = mid + 1;
-                else
-                {
-                    // Key already exists -> append RID
-                    leaf.Values[mid].Add(rid);
-                    return;
-                }
+                WriteLeaf(p, parentPid, entries);
+                Flush(p);
+                return;
             }
 
-            // Key does not exist -> insert new key and RID list
-            int insertIndex = lo;
-            leaf.Keys.Insert(insertIndex, key);
-            leaf.Values.Insert(insertIndex, [rid]);
+            SplitLeaf(p, entries, parentPid);
         }
 
-        private void SplitLeaf(LeafNode leaf)
+        // ---------------- LEAF SPLIT ----------------
+
+        private void SplitLeaf(Page leaf, List<(Key key, List<RID> rids)> entries, int parentPid)
         {
-            int mid = leaf.Keys.Count / 2;
+            int mid = entries.Count / 2;
 
-            var right = new LeafNode();
+            var rightEntries = entries.GetRange(mid, entries.Count - mid);
+            entries.RemoveRange(mid, entries.Count - mid);
 
-            // Move half of the keys and values to the new right leaf
-            for (int i = mid; i < leaf.Keys.Count; i++)
+            int rightPid = AllocateNode(isLeaf: true, parentPid);
+            var right = Load(rightPid);
+
+            // Write both leaves
+            WriteLeaf(leaf, parentPid, entries);
+            WriteLeaf(right, parentPid, rightEntries);
+
+            // Maintain leaf linked list
+            int oldNext = BinaryPrimitives.ReadInt32LittleEndian(
+                leaf.Buffer.AsSpan(PayloadOffset + 4));
+
+            BinaryPrimitives.WriteInt32LittleEndian(
+                leaf.Buffer.AsSpan(PayloadOffset + 4), rightPid);
+
+            BinaryPrimitives.WriteInt32LittleEndian(
+                right.Buffer.AsSpan(PayloadOffset), leaf.PageId);
+
+            BinaryPrimitives.WriteInt32LittleEndian(
+                right.Buffer.AsSpan(PayloadOffset + 4), oldNext);
+
+            Flush(leaf);
+            Flush(right);
+
+            if (oldNext != -1)
             {
-                right.Keys.Add(leaf.Keys[i]);
-                right.Values.Add(leaf.Values[i]);
+                var nextNode = Load(oldNext);
+                // Update the PREV pointer (offset 0 in payload) of the neighbor
+                BinaryPrimitives.WriteInt32LittleEndian(
+                    nextNode.Buffer.AsSpan(PayloadOffset),
+                    rightPid
+                );
+                Flush(nextNode);
             }
 
-            // Remove moved keys and values from the original leaf
-            int removeCount = leaf.Keys.Count - mid;
-            leaf.Keys.RemoveRange(mid, removeCount);
-            leaf.Values.RemoveRange(mid, removeCount);
+            // promote FIRST key of right node
+            InsertIntoParent(leaf.PageId, rightEntries[0].key, rightPid);
+        }
 
-            // Fix linked list pointers
-            right.Next = leaf.Next;
-            if (right.Next != null)
+        // ---------------- INTERNAL INSERT ----------------
+
+        private void InsertIntoParent(int leftPid, Key key, int rightPid)
+        {
+            var left = Load(leftPid);
+            IndexNodeHeader.Read(left.Buffer, out _, out _, out int parentPid);
+
+            if (parentPid == -1)
             {
-                right.Next.Prev = right;
+                int newRootPid = AllocateNode(isLeaf: false, -1);
+                var root = Load(newRootPid);
+
+                WriteInternal(
+                    root,
+                    -1,
+                    new List<(Key, int)> { (key, leftPid) },
+                    rightPid
+                );
+
+                // update child parents
+                SetParent(leftPid, newRootPid);
+                SetParent(rightPid, newRootPid);
+
+                RootPageId = newRootPid;
+                Flush(root);
+                return;
             }
 
-            leaf.Next = right;
-            right.Prev = leaf;
+            var parent = Load(parentPid);
+            InsertIntoInternal(parent, key, rightPid);
+        }
 
-            // Parent Handling 
-            if (leaf.Parent == null)
+        private void WriteInternal(Page page, int parentPid, List<(Key key, int childPid)> entries, int rightMostChildPid)
+        {
+            IndexNodeHeader.Write(
+                page.Buffer,
+                isLeaf: false,
+                keyCount: (short)entries.Count,
+                parentPageId: parentPid
+            );
+
+            int off = PayloadOffset;
+
+            // Write children + keys
+            foreach (var (key, childPid) in entries)
             {
-                var newRoot = new InternalNode();
+                BinaryPrimitives.WriteInt32LittleEndian(
+                    page.Buffer.AsSpan(off), childPid);
+                off += 4;
 
-                newRoot.Keys.Add(right.Keys[0]);
-                newRoot.Children.Add(leaf);
-                newRoot.Children.Add(right);
+                WriteKey(page.Buffer, ref off, key);
+            }
 
-                leaf.Parent = newRoot;
-                right.Parent = newRoot;
+            // write RIGHTMOST child pointer
+            BinaryPrimitives.WriteInt32LittleEndian(
+                page.Buffer.AsSpan(off), rightMostChildPid);
 
-                _root = newRoot;
+            Flush(page);
+        }
+
+        private void InsertIntoInternal(Page parent, Key key, int rightChildPid)
+        {
+            IndexNodeHeader.Read(parent.Buffer, out _, out short keyCount, out int parentPid);
+
+            var (entries, rightMostChildPid) = ReadInternal(parent, keyCount);
+
+            // Find insert position
+            int i = 0;
+            while (i < entries.Count && entries[i].key.CompareTo(key) < 0)
+                i++;
+
+            // logic to handle the shift correctly
+            if (i == entries.Count)
+            {
+                // Inserting at the end: Old RightMost becomes Left Child of new Key.
+                // New Child becomes the new RightMost.
+                entries.Add((key, rightMostChildPid));
+                rightMostChildPid = rightChildPid;
             }
             else
             {
-                InsertIntoInternal((InternalNode)leaf.Parent, right.Keys[0], right);
+                // Inserting in middle: We split the child at 'i'.
+                // The existing child at entries[i].childPid (Left of old Key[i]) 
+                // becomes the Left Child of our NEW Key.
+                int leftPid = entries[i].childPid;
+
+                // Insert new key pointing to the existing left node
+                entries.Insert(i, (key, leftPid));
+
+                // The NEXT entry (which was the old entries[i]) must now point 
+                // to our new rightChildPid as its Left Child.
+                var nextEntry = entries[i + 1];
+                entries[i + 1] = (nextEntry.key, rightChildPid);
             }
+
+            // ... rest of the function (overflow check) remains the same
+            if (entries.Count < _order)
+            {
+                WriteInternal(parent, parentPid, entries, rightMostChildPid);
+                Flush(parent);
+                return;
+            }
+
+            SplitInternal(parent, entries, rightMostChildPid, parentPid);
         }
 
-        private void InsertIntoInternal(InternalNode parent, Key key, Node rightChild)
+        private (List<(Key key, int childPid)> entries, int rightMostChildPid) ReadInternal(Page page, int keyCount)
         {
-            // find position to insert key
+            var entries = new List<(Key, int)>(keyCount);
 
-            int lo = 0, hi = parent.Keys.Count - 1;
+            int off = PayloadOffset;
 
-            while (lo <= hi)
+            for (int i = 0; i < keyCount; i++)
             {
-                int mid = (lo + hi) >> 1;
-                int cmp = key.CompareTo(parent.Keys[mid]);
+                // READ child pointer FIRST
+                int childPid = BinaryPrimitives.ReadInt32LittleEndian(
+                    page.Buffer.AsSpan(off));
+                off += 4;
 
-                if (cmp < 0) hi = mid - 1;
-                else
-                {
-                    lo = mid + 1;
-                }
+                // THEN read key
+                var key = ReadKey(page.Buffer, ref off);
+
+                entries.Add((key, childPid));
             }
 
-            int insertIndex = lo;
+            // READ right-most child
+            int rightMostChildPid = BinaryPrimitives.ReadInt32LittleEndian(
+                page.Buffer.AsSpan(off));
 
-            parent.Keys.Insert(insertIndex, key);
-            parent.Children.Insert(insertIndex + 1, rightChild);
-            rightChild.Parent = parent;
-
-            if (parent.Children.Count >= Order)
-            {
-                SplitInternal(parent);
-            }
+            return (entries, rightMostChildPid);
         }
 
-
-        private void SplitInternal(InternalNode node)
+        private void SplitInternal(Page left, List<(Key key, int childPid)> entries, int rightMostChildPid, int parentPid)
         {
-            int midKeyIndex = node.Keys.Count / 2;
-            Key promoteKey = node.Keys[midKeyIndex];
+            int mid = entries.Count / 2;
+            var promoteKey = entries[mid].key;
 
-            var right = new InternalNode();
+            // SAVE the child pointer to the left of the promoted key.
+            // This node becomes the RightMost child of the LEFT page.
+            int leftRightMost = entries[mid].childPid;
 
-            // Move half of the keys and children to the new right internal node
-            for (int i = midKeyIndex + 1; i < node.Keys.Count; i++)
-            {
-                right.Keys.Add(node.Keys[i]);
-            }
+            var rightEntries = entries.GetRange(mid + 1, entries.Count - (mid + 1));
+            entries.RemoveRange(mid, entries.Count - mid);
 
-            for (int i = midKeyIndex + 1; i < node.Children.Count; i++)
-            {
-                right.Children.Add(node.Children[i]);
-                node.Children[i].Parent = right;
-            }
+            int rightPid = AllocateNode(isLeaf: false, parentPid);
+            var right = Load(rightPid);
 
-            // Remove moved keys and children from the original node
-            int removeKeys = node.Keys.Count - midKeyIndex;
-            node.Keys.RemoveRange(midKeyIndex, removeKeys);
+            // Use 'leftRightMost' instead of 'entries.Last().childPid'
+            WriteInternal(left, parentPid, entries, leftRightMost);
+            WriteInternal(right, parentPid, rightEntries, rightMostChildPid);
 
-            int removeChildren = node.Children.Count - (midKeyIndex + 1);
-            node.Children.RemoveRange(midKeyIndex + 1, removeChildren);
+            // Update parents for all children moved to the new right node
+            UpdateChildrenParent(rightEntries, rightMostChildPid, rightPid);
 
-            right.Parent = node.Parent;
+            Flush(left);
+            Flush(right);
 
-            if (node.Parent == null)
-            {
-                var newRoot = new InternalNode();
-                newRoot.Keys.Add(promoteKey);
-                newRoot.Children.Add(node);
-                newRoot.Children.Add(right);
-
-                node.Parent = newRoot;
-                right.Parent = newRoot;
-                _root = newRoot;
-            } else
-            {
-                InsertIntoInternal((InternalNode)node.Parent, promoteKey, right);
-            }
+            InsertIntoParent(left.PageId, promoteKey, rightPid);
         }
 
-        public string Dump()
-        {
-            var sb = new System.Text.StringBuilder();
-            DumpNode(_root, 0, sb);
-            return sb.ToString();
-        }
+        // ---------------- BORROW / MERGE (CORE IDEA) ----------------
 
-        private void DumpNode(Node node, int level, System.Text.StringBuilder sb)
+        private void HandleUnderflow(Page node)
         {
-            sb.Append(new string(' ', level * 2));
+            IndexNodeHeader.Read(node.Buffer, out bool isLeaf, out _, out _);
 
-            if (node.IsLeaf)
+            if (isLeaf)
             {
-                var leaf = (LeafNode)node;
-                sb.Append("Leaf: ");
-
-                for (int i = 0; i < leaf.Keys.Count; i++)
-                {
-                    sb.Append($"[{leaf.Keys[i]} -> ");
-                    sb.Append(string.Join(",", leaf.Values[i]));
-                    sb.Append("] ");
-                }
-
-                sb.AppendLine();
+                if (BorrowFromLeftLeaf(node)) return;
+                if (BorrowFromRightLeaf(node)) return;
+                MergeLeafNode(node);
             }
             else
             {
-                var internalNode = (InternalNode)node;
-                sb.Append("Internal: ");
+                if (BorrowFromLeftInternal(node)) return;
+                if (BorrowFromRightInternal(node)) return;
+                MergeInternal(node);
+            }
 
-                foreach (var key in internalNode.Keys)
-                    sb.Append($"{key} ");
+            TryShrinkRoot();
+        }
+        private bool BorrowFromRightLeaf(Page leaf)
+        {
+            var (leftPid, parentPid, sepIndex) =
+                FindLeftSibling(leaf.PageId);
 
-                sb.AppendLine();
+            // actually find RIGHT sibling
+            var parent = Load(parentPid);
+            var (entries, rightMost) =
+                ReadInternal(parent, GetKeyCount(parent));
 
-                foreach (var child in internalNode.Children)
-                    DumpNode(child, level + 1, sb);
+            var children = new List<int>();
+            foreach (var e in entries)
+                children.Add(e.childPid);
+            children.Add(rightMost);
+
+            int index = children.IndexOf(leaf.PageId);
+            if (index >= children.Count - 1)
+                return false;
+
+            int rightPid = children[index + 1];
+            var right = Load(rightPid);
+
+            var rightEntries = ReadLeafEntries(right, GetKeyCount(right));
+            if (rightEntries.Count <= MinKeys(true))
+                return false;
+
+            var leafEntries = ReadLeafEntries(leaf, GetKeyCount(leaf));
+
+            // borrow first entry from right
+            var borrowed = rightEntries[0];
+            rightEntries.RemoveAt(0);
+            leafEntries.Add(borrowed);
+
+            WriteLeaf(right, parentPid, rightEntries);
+            WriteLeaf(leaf, parentPid, leafEntries);
+
+            UpdateParentSeparator(
+                parentPid,
+                index,
+                rightEntries[0].Item1);
+
+            return true;
+        }
+
+        private (int leftPid, int parentPid, int sepIndex) FindLeftSibling(int leafPid)
+        {
+            var leaf = Load(leafPid);
+            IndexNodeHeader.Read(leaf.Buffer, out _, out _, out int parentPid);
+            if (parentPid < 0)
+                return (-1, -1, -1);
+
+            var parent = Load(parentPid);
+            var (entries, rightMost) =
+                ReadInternal(parent, GetKeyCount(parent));
+
+            var children = new List<int>();
+            foreach (var e in entries)
+                children.Add(e.childPid);
+            children.Add(rightMost);
+
+            int index = children.IndexOf(leafPid);
+
+            if (index <= 0)
+                return (-1, parentPid, -1);
+
+            return (children[index - 1], parentPid, index - 1);
+        }
+
+        private bool BorrowFromLeftLeaf(Page leaf)
+        {
+            var (leftPid, parentPid, sepIndex) = FindLeftSibling(leaf.PageId);
+            if (leftPid < 0) return false;
+
+            var left = Load(leftPid);
+
+            var leftEntries = ReadLeafEntries(left, GetKeyCount(left));
+            var leafEntries = ReadLeafEntries(leaf, GetKeyCount(leaf));
+
+            if (leftEntries.Count <= MinKeys(true))
+                return false;
+
+            // move last entry
+            var borrowed = leftEntries.Last();
+            leftEntries.RemoveAt(leftEntries.Count - 1);
+            leafEntries.Insert(0, borrowed);
+
+            WriteLeaf(left, parentPid, leftEntries);
+            WriteLeaf(leaf, parentPid, leafEntries);
+
+            UpdateParentSeparator(parentPid, sepIndex, leafEntries[0].Item1);
+            return true;
+        }
+        private void MergeLeaf(Page left, Page right, int parentPid)
+        {
+            var leftEntries = ReadLeafEntries(left, GetKeyCount(left));
+            var rightEntries = ReadLeafEntries(right, GetKeyCount(right));
+
+            leftEntries.AddRange(rightEntries);
+
+            WriteLeaf(left, parentPid, leftEntries);
+            MarkPageFree(right.PageId);
+
+            RemoveParentSeparator(parentPid, right.PageId);
+        }
+        private void MergeLeafNode(Page leaf)
+        {
+            var (leftPid, parentPid, sepIndex) =
+                FindLeftSibling(leaf.PageId);
+
+            if (leftPid < 0)
+                return;
+
+            var left = Load(leftPid);
+
+            MergeLeaf(left, leaf, parentPid);
+        }
+        private void UpdateParentSeparator(int parentPid,int sepIndex,Key newKey)
+        {
+            var parent = Load(parentPid);
+            var (entries, rightMost) =
+                ReadInternal(parent, GetKeyCount(parent));
+
+            entries[sepIndex] =
+                (newKey, entries[sepIndex].childPid);
+
+            WriteInternal(parent, -1, entries, rightMost);
+            Flush(parent);
+        }
+
+        private void RemoveParentSeparator(int parentPid,int removedChildPid)
+        {
+            var parent = Load(parentPid);
+            var (entries, rightMost) =
+                ReadInternal(parent, GetKeyCount(parent));
+
+            for (int i = 0; i < entries.Count; i++)
+            {
+                if (entries[i].childPid == removedChildPid)
+                {
+                    entries.RemoveAt(i);
+                    break;
+                }
+            }
+
+            WriteInternal(parent, -1, entries, rightMost);
+            Flush(parent);
+        }
+        private int ReadSingleChild(Page root)
+        {
+            int off = PayloadOffset;
+            return BinaryPrimitives.ReadInt32LittleEndian(
+                root.Buffer.AsSpan(off));
+        }
+
+        private void MarkPageFree(int pageId)
+        {
+            var p = Load(pageId);
+            p.Header.PageType = PageType.Free;
+            Flush(p);
+        }
+
+        private (int leftPid, int rightPid, int sepIndex, Page parent) FindInternalSiblings(Page node)
+        {
+            IndexNodeHeader.Read(node.Buffer, out _, out _, out int parentPid);
+            if (parentPid < 0)
+                return (-1, -1, -1, null!);
+
+            var parent = Load(parentPid);
+            var (entries, rightMost) =
+                ReadInternal(parent, GetKeyCount(parent));
+
+            // children array reconstruction
+            var children = new List<int>();
+            foreach (var e in entries)
+                children.Add(e.childPid);
+            children.Add(rightMost);
+
+            int index = children.IndexOf(node.PageId);
+
+            int leftPid = index > 0 ? children[index - 1] : -1;
+            int rightPid = index < children.Count - 1 ? children[index + 1] : -1;
+
+            int sepIndex = index - 1; // separator key index
+
+            return (leftPid, rightPid, sepIndex, parent);
+        }
+        private bool BorrowFromLeftInternal(Page node)
+        {
+            var (leftPid, _, sepIndex, parent) = FindInternalSiblings(node);
+            if (leftPid < 0) return false;
+
+            var left = Load(leftPid);
+
+            if (GetKeyCount(left) <= MinKeys(isLeaf: false))
+                return false;
+
+            // Read structures
+            var (parentEntries, parentRight) =
+                ReadInternal(parent, GetKeyCount(parent));
+            var (leftEntries, leftRight) =
+                ReadInternal(left, GetKeyCount(left));
+            var (nodeEntries, nodeRight) =
+                ReadInternal(node, GetKeyCount(node));
+
+            // Rotation:
+            // parentKey -> node
+            // left maxKey -> parent
+            var borrowedChild = leftRight;
+            var borrowedKey = leftEntries.Last().key;
+
+            leftRight = leftEntries.Last().childPid;
+            leftEntries.RemoveAt(leftEntries.Count - 1);
+
+            var parentKey = parentEntries[sepIndex].key;
+            parentEntries[sepIndex] = (borrowedKey, parentEntries[sepIndex].childPid);
+
+            nodeEntries.Insert(0, (parentKey, borrowedChild));
+
+            // Persist
+            WriteInternal(left, parent.PageId, leftEntries, leftRight);
+            WriteInternal(node, parent.PageId, nodeEntries, nodeRight);
+            WriteInternal(parent, -1, parentEntries, parentRight);
+
+            Flush(left);
+            Flush(node);
+            Flush(parent);
+
+            return true;
+        }
+        private bool BorrowFromRightInternal(Page node)
+        {
+            var (_, rightPid, sepIndex, parent) = FindInternalSiblings(node);
+            if (rightPid < 0) return false;
+
+            var right = Load(rightPid);
+
+            if (GetKeyCount(right) <= MinKeys(isLeaf: false))
+                return false;
+
+            var (parentEntries, parentRight) =
+                ReadInternal(parent, GetKeyCount(parent));
+            var (rightEntries, rightRight) =
+                ReadInternal(right, GetKeyCount(right));
+            var (nodeEntries, nodeRight) =
+                ReadInternal(node, GetKeyCount(node));
+
+            // rotation
+            var borrowedKey = rightEntries[0].key;
+            var borrowedChild = rightEntries[0].childPid;
+
+            rightEntries.RemoveAt(0);
+
+            var parentKey = parentEntries[sepIndex].key;
+            parentEntries[sepIndex] = (borrowedKey, parentEntries[sepIndex].childPid);
+
+            nodeEntries.Add((parentKey, nodeRight));
+            nodeRight = borrowedChild;
+
+            WriteInternal(right, parent.PageId, rightEntries, rightRight);
+            WriteInternal(node, parent.PageId, nodeEntries, nodeRight);
+            WriteInternal(parent, -1, parentEntries, parentRight);
+
+            Flush(right);
+            Flush(node);
+            Flush(parent);
+
+            return true;
+        }
+        private void MergeInternal(Page node)
+        {
+            var (leftPid, rightPid, sepIndex, parent) =
+                FindInternalSiblings(node);
+
+            if (leftPid < 0 && rightPid < 0)
+                return;
+
+            Page left, right;
+
+            if (leftPid >= 0)
+            {
+                left = Load(leftPid);
+                right = node;
+            }
+            else
+            {
+                left = node;
+                right = Load(rightPid);
+            }
+
+            var (parentEntries, parentRight) =
+                ReadInternal(parent, GetKeyCount(parent));
+            var sepKey = parentEntries[sepIndex].key;
+
+            var (leftEntries, leftRight) =
+                ReadInternal(left, GetKeyCount(left));
+            var (rightEntries, rightRight) =
+                ReadInternal(right, GetKeyCount(right));
+
+            // Merge: left + separator + right
+            leftEntries.Add((sepKey, leftRight));
+            leftEntries.AddRange(rightEntries);
+            leftRight = rightRight;
+
+            parentEntries.RemoveAt(sepIndex);
+
+            WriteInternal(left, parent.PageId, leftEntries, leftRight);
+            WriteInternal(parent, -1, parentEntries, parentRight);
+
+            Flush(left);
+            Flush(parent);
+
+            MarkPageFree(right.PageId);
+
+            if (parentEntries.Count < MinKeys(isLeaf: false))
+                HandleUnderflow(parent);
+        }
+        private void TryShrinkRoot()
+        {
+            var root = Load(RootPageId);
+            IndexNodeHeader.Read(root.Buffer, out bool isLeaf, out short keyCount, out _);
+
+            if (!isLeaf && keyCount == 0)
+            {
+                int newRootPid = ReadSingleChild(root);
+                RootPageId = newRootPid;
+                MarkPageFree(root.PageId);
             }
         }
+
+
+        // ---------------- LOW-LEVEL READ / WRITE ----------------
+
+        private List<(Key, List<RID>)> ReadLeafEntries(Page p, short keyCount)
+        {
+            var list = new List<(Key, List<RID>)>();
+            int off = PayloadOffset + 8;
+
+            for (int i = 0; i < keyCount; i++)
+            {
+                var key = ReadKey(p.Buffer, ref off);
+                short rc = BinaryPrimitives.ReadInt16LittleEndian(p.Buffer.AsSpan(off));
+                off += 2;
+
+                var rids = new List<RID>();
+                for (int r = 0; r < rc; r++)
+                {
+                    int pid = BinaryPrimitives.ReadInt32LittleEndian(p.Buffer.AsSpan(off));
+                    int sid = BinaryPrimitives.ReadInt32LittleEndian(p.Buffer.AsSpan(off + 4));
+                    off += 8;
+                    rids.Add(new RID(pid, sid));
+                }
+                list.Add((key, rids));
+            }
+            return list;
+        }
+
+        private void WriteLeaf(Page p, int parentPid, List<(Key, List<RID>)> entries)
+        {
+            IndexNodeHeader.Write(p.Buffer, true, (short)entries.Count, parentPid);
+
+            int off = PayloadOffset + 8;
+
+            foreach (var (key, rids) in entries)
+            {
+                WriteKey(p.Buffer,ref off, key);
+                BinaryPrimitives.WriteInt16LittleEndian(p.Buffer.AsSpan(off), (short)rids.Count);
+                off += 2;
+
+                foreach (var rid in rids)
+                {
+                    BinaryPrimitives.WriteInt32LittleEndian(p.Buffer.AsSpan(off), rid.PageId);
+                    BinaryPrimitives.WriteInt32LittleEndian(p.Buffer.AsSpan(off + 4), rid.SlotId);
+                    off += 8;
+                }
+            }
+        }
+
+        private void InsertEntry(List<(Key, List<RID>)> entries, Key key, RID rid)
+        {
+            int i = 0;
+            while (i < entries.Count && entries[i].Item1.CompareTo(key) < 0)
+                i++;
+
+            // Block duplicate keys
+            if (i < entries.Count && entries[i].Item1.CompareTo(key) == 0)
+                throw new InvalidOperationException($"Duplicate key '{key.Value}'");
+
+            // Insert new unique key
+            entries.Insert(i, (key, new List<RID> { rid }));
+        }
+
+
+        // --- INTERNAL READ/WRITE OMITTED FOR BREVITY ---
+        // Same pattern as leaf, but (Key, ChildPid) + RightMostChild
+
+
         public IEnumerable<RID> Search(object rawKey)
         {
             var key = Key.FromObject(rawKey);
-            var leaf = FindLeaf(key);
+            int leafPid = FindLeafPage(key);
 
-            int lo = 0, hi = leaf.Keys.Count - 1;
+            var leaf = Load(leafPid);
+            IndexNodeHeader.Read(leaf.Buffer, out _, out short keyCount, out _);
 
-            while (lo <= hi)
+            int off = PayloadOffset + 8; // skip prev/next
+
+            for (int i = 0; i < keyCount; i++)
             {
-                int mid = (lo + hi) >> 1;
-                int cmp = key.CompareTo(leaf.Keys[mid]);
+                var k = ReadKey(leaf.Buffer, ref off);
+                short rc = BinaryPrimitives.ReadInt16LittleEndian(
+                    leaf.Buffer.AsSpan(off));
+                off += 2;
 
-                if (cmp < 0)
-                    hi = mid - 1;
-                else if (cmp > 0)
-                    lo = mid + 1;
-                else
+                if (k.CompareTo(key) == 0)
                 {
-                    var list = leaf.Values[mid];
-                    // enforce invariant: no empty RID list
-                    return list.Count == 0
-                        ? Enumerable.Empty<RID>()
-                        : list;
+                    for (int r = 0; r < rc; r++)
+                    {
+                        int pid = BinaryPrimitives.ReadInt32LittleEndian(
+                            leaf.Buffer.AsSpan(off));
+                        int sid = BinaryPrimitives.ReadInt32LittleEndian(
+                            leaf.Buffer.AsSpan(off + 4));
+                        off += 8;
+                        yield return new RID(pid, sid);
+                    }
+                    yield break;
                 }
-            }
 
-            return Enumerable.Empty<RID>(); // NOT FOUND
+                off += rc * 8;
+            }
+        }
+        public IEnumerable<(object Key, RID Rid)> RangeScan(Key? minKey, Key? maxKey)
+        {
+            int leafPid;
+
+            if (minKey != null)
+                leafPid = FindLeafPage(minKey);
+            else
+                leafPid = FindLeftMostLeaf();
+
+            while (leafPid != -1)
+            {
+                var leaf = Load(leafPid);
+                IndexNodeHeader.Read(leaf.Buffer, out _, out short keyCount, out _);
+
+                int off = PayloadOffset;
+
+                // Skip Prev pointer (4 bytes)
+                // Read Next pointer (4 bytes) at offset + 4
+                int next = BinaryPrimitives.ReadInt32LittleEndian(leaf.Buffer.AsSpan(off + 4));
+                off += 8; // Move past Prev and Next pointers
+
+                for (int i = 0; i < keyCount; i++)
+                {
+                    var key = ReadKey(leaf.Buffer, ref off);
+                    short rc = BinaryPrimitives.ReadInt16LittleEndian(leaf.Buffer.AsSpan(off));
+                    off += 2;
+
+                    // Optimization: Stop early if we exceeded maxKey
+                    if (maxKey != null && key.CompareTo(maxKey) > 0)
+                        yield break;
+
+                    if (minKey == null || key.CompareTo(minKey) >= 0)
+                    {
+                        for (int r = 0; r < rc; r++)
+                        {
+                            int pid = BinaryPrimitives.ReadInt32LittleEndian(leaf.Buffer.AsSpan(off));
+                            int sid = BinaryPrimitives.ReadInt32LittleEndian(leaf.Buffer.AsSpan(off + 4));
+                            yield return (key.Value, new RID(pid, sid));
+                            off += 8;
+                        }
+                    }
+                    else
+                    {
+                        // Key is smaller than minKey, skip its RIDs
+                        off += rc * 8;
+                    }
+                }
+
+                leafPid = next;
+            }
         }
 
-        // TODO: borrow/merge logic later
+        private int FindLeftMostLeaf()
+        {
+            int pid = RootPageId;
+
+            while (true)
+            {
+                var page = Load(pid);
+                IndexNodeHeader.Read(page.Buffer, out bool isLeaf, out _, out _);
+                if (isLeaf)
+                    return pid;
+
+                int off = PayloadOffset;
+                pid = BinaryPrimitives.ReadInt32LittleEndian(
+                    page.Buffer.AsSpan(off)); // first child
+            }
+        }
+
         public void Delete(object rawKey, RID rid)
         {
             var key = Key.FromObject(rawKey);
-            var leaf = FindLeaf(key);
+            int leafPid = FindLeafPage(key);
 
-            int lo = 0, hi = leaf.Keys.Count - 1;
+            var leaf = Load(leafPid);
+            IndexNodeHeader.Read(leaf.Buffer, out _, out short keyCount, out int parentPid);
 
-            while (lo <= hi)
+            var entries = ReadLeafEntries(leaf, keyCount);
+
+            for (int i = 0; i < entries.Count; i++)
             {
-                int mid = (lo + hi) >> 1;
-                int cmp = key.CompareTo(leaf.Keys[mid]);
-
-                if (cmp < 0)
-                    hi = mid - 1;
-                else if (cmp > 0)
-                    lo = mid + 1;
-                else
+                if (entries[i].Item1.CompareTo(key) == 0)
                 {
-                    // key found → remove RID
-                    var list = leaf.Values[mid];
-                    list.RemoveAll(r => r.PageId == rid.PageId && r.SlotId == rid.SlotId);
+                    entries[i].Item2.RemoveAll(
+                        r => r.PageId == rid.PageId && r.SlotId == rid.SlotId);
 
-                    // if no RIDs left, remove key
-                    if (list.Count == 0)
-                    {
-                        leaf.Keys.RemoveAt(mid);
-                        leaf.Values.RemoveAt(mid);
-                    }
-                    return;
+                    if (entries[i].Item2.Count == 0)
+                        entries.RemoveAt(i);
+
+                    break;
                 }
             }
+
+            WriteLeaf(leaf, parentPid, entries);
+            Flush(leaf);
+
+            if (entries.Count < MinKeys(isLeaf: true))
+                HandleUnderflow(leaf);
+        }
+        private short GetKeyCount(Page p)
+        {
+            IndexNodeHeader.Read(p.Buffer, out _, out short kc, out _);
+            return kc;
         }
 
-        public IEnumerable<(object Key, RID Rid)> RangeScan(object minRaw, object maxRaw)
+        private int MinKeys(bool isLeaf)
         {
-            var minKey = Key.FromObject(minRaw);
-            var maxKey = Key.FromObject(maxRaw);
-
-            // 1. Find the leaf where minKey should exist
-            var leaf = FindLeaf(minKey);
-
-            // 2. Find starting position inside that leaf
-            int startIndex = 0;
-            while (startIndex < leaf.Keys.Count &&
-                   leaf.Keys[startIndex].CompareTo(minKey) < 0)
-            {
-                startIndex++;
-            }
-
-            // 3. Iterate leaf-by-leaf
-            var current = leaf;
-            int index = startIndex;
-
-            while (current != null)
-            {
-                while (index < current.Keys.Count)
-                {
-                    var key = current.Keys[index];
-
-                    // Stop when key > max
-                    if (key.CompareTo(maxKey) > 0)
-                        yield break;
-
-                    foreach (var rid in current.Values[index])
-                        yield return (key.Value, rid);
-
-                    index++;
-                }
-
-                // move to next leaf
-                current = current.Next;
-                index = 0;
-            }
+            return isLeaf
+                ? (_order - 1) / 2
+                : (_order / 2) - 1;
+        }
+        public bool Contains(object rawKey)
+        {
+            var key = Key.FromObject(rawKey);
+            return Search(key).Any();
         }
 
-        public IEnumerable<RID> RangeScan(Key? low, bool lowInclusive, Key? high, bool highInclusive)
+        private void SetParent(int childPid, int parentPid)
         {
-            if (_root == null)
-                yield break;
-
-            // 1️ Find starting leaf
-            var node = (low == null)
-                ? LeftMostLeaf()
-                : FindLeaf(low);
-
-            while (node != null)
-            {
-                for (int i = 0; i < node.Keys.Count; i++)
-                {
-                    var key = node.Keys[i];
-
-                    // Check lower bound
-                    if (low != null)
-                    {
-                        int cmpLow = key.CompareTo(low);
-                        if (cmpLow < 0 || (!lowInclusive && cmpLow == 0))
-                            continue;
-                    }
-
-                    // Check upper bound
-                    if (high != null)
-                    {
-                        int cmpHigh = key.CompareTo(high);
-                        if (cmpHigh > 0 || (!highInclusive && cmpHigh == 0))
-                            yield break; // stop scan
-                    }
-
-                    foreach (var rid in node.Values[i])
-                        yield return rid;
-                }
-
-                node = node.Next; // move to next leaf
-            }
+            var c = Load(childPid);
+            IndexNodeHeader.Read(c.Buffer, out bool isLeaf, out short kc, out _);
+            IndexNodeHeader.Write(c.Buffer, isLeaf, kc, parentPid);
+            Flush(c);
         }
 
-        private LeafNode LeftMostLeaf()
+        private void UpdateChildrenParent(List<(Key key, int childPid)> entries, int rightMostChildPid, int parentPid)
         {
-            var node = _root;
-            while (node is InternalNode internalNode)
-                node = internalNode.Children[0];
+            foreach (var (_, pid) in entries)
+                SetParent(pid, parentPid);
 
-            return (LeafNode)node;
+            SetParent(rightMostChildPid, parentPid);
         }
 
     }

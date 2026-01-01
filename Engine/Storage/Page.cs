@@ -49,10 +49,13 @@ namespace DB.Engine.Storage
                 throw new ArgumentException("Invalid Page Type");
             }
 
-            if (Header.SlotCount < 0 || Header.SlotCount > 1024) // Validate slot count
-            {
-                throw new ArgumentException("Corrupted Slot Count");
-            }
+            //if (Header.PageType == PageType.Data || Header.PageType == PageType.Meta)
+            //{
+            //    if (Header.SlotCount < 0 || Header.SlotCount > 1024)
+            //    {
+            //        throw new ArgumentException("Corrupted Slot Count");
+            //    }
+            //}
 
             PageId = Header.PageId;
         }
@@ -77,6 +80,9 @@ namespace DB.Engine.Storage
 
         public bool TryInsertRecord(byte[] payload, out int slotIndex)
         {
+            if (Header.PageType != PageType.Data && Header.PageType != PageType.Meta)
+                throw new InvalidOperationException("Cannot insert record into non-data page.");
+
 
             if (payload == null || payload.Length == 0)
             {
@@ -155,6 +161,10 @@ namespace DB.Engine.Storage
 
         public byte[] ReadRecord(int slotId)
         {
+            if (Header.PageType != PageType.Data && Header.PageType != PageType.Meta)
+                throw new InvalidOperationException("Cannot read record from non-data page.");
+
+
             if (slotId < 0 || slotId >= Header.SlotCount)
             {
                 throw new ArgumentOutOfRangeException(nameof(slotId), "Invalid slot ID");
@@ -188,6 +198,7 @@ namespace DB.Engine.Storage
 
         public void DeleteRecord(int slotId)
         {
+
             if (slotId < 0 || slotId >= Header.SlotCount)
             {
                 throw new ArgumentOutOfRangeException(nameof(slotId));
@@ -210,6 +221,7 @@ namespace DB.Engine.Storage
 
         public void Vacuum()
         {
+
             // Step 1: Collect all valid records
             var liveRecords = new List<(int SlotId, byte[] Data)>();
 

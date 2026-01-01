@@ -30,51 +30,52 @@ namespace DB.Engine.Storage
         public void WriteTo(Span<byte> buffer)
         {
             if (buffer.Length < DbOptions.HeaderSize)
-            {
                 throw new ArgumentException($"Buffer must be atleast {DbOptions.HeaderSize} bytes");
+
+            buffer.Slice(0, DbOptions.HeaderSize).Clear();
+
+            BinaryPrimitives.WriteInt32LittleEndian(buffer.Slice(0, 4), PageId);
+            buffer[4] = (byte)PageType;
+
+            if (PageType == PageType.Data || PageType == PageType.Meta)
+            {
+                BinaryPrimitives.WriteInt32LittleEndian(buffer.Slice(8, 4), FreeSpaceOffset);
+                BinaryPrimitives.WriteInt16LittleEndian(buffer.Slice(12, 2), SlotCount);
             }
 
-            buffer.Slice(0, DbOptions.HeaderSize).Clear(); // Clear header area
-
-            BinaryPrimitives.WriteInt32LittleEndian(buffer.Slice(0, 4), PageId); // 4 byte for PageId
-
-            buffer[4] = (byte)PageType; // 1 byte for PageType
-
-            // 3 bytes padding 5 6 7
-
-            BinaryPrimitives.WriteInt32LittleEndian(buffer.Slice(8, 4), FreeSpaceOffset); // 4 bytes for FreeSpaceOffset
-
-            BinaryPrimitives.WriteInt16LittleEndian(buffer.Slice(12, 2), SlotCount); // 2 bytes for SlotCount
-
-            // 2 bytes padding 14 15
-
-            BinaryPrimitives.WriteInt32LittleEndian(buffer.Slice(16, 4), CheckSum); // 4 bytes for CheckSum
-
-            // 20 bytes padding 20-31
+            BinaryPrimitives.WriteInt32LittleEndian(buffer.Slice(16, 4), CheckSum);
         }
 
         public static PageHeader ReadFrom(ReadOnlySpan<byte> buffer)
         {
             if (buffer.Length < DbOptions.HeaderSize)
-            {
                 throw new ArgumentException($"Buffer must be atleast {DbOptions.HeaderSize} bytes");
-            }
 
-            // Read fields from buffer
             int pageId = BinaryPrimitives.ReadInt32LittleEndian(buffer.Slice(0, 4));
             PageType pageType = (PageType)buffer[4];
-            int freeSpaceOffset = BinaryPrimitives.ReadInt32LittleEndian(buffer.Slice(8, 4));
-            short slotCount = BinaryPrimitives.ReadInt16LittleEndian(buffer.Slice(12, 2));
-            int checkSum = BinaryPrimitives.ReadInt32LittleEndian(buffer.Slice(16, 4));
 
-            var header = new PageHeader(pageId, pageType)
+            var header = new PageHeader(pageId, pageType);
+
+            // ONLY slotted pages read slot metadata
+            if (pageType == PageType.Data || pageType == PageType.Meta)
             {
-                FreeSpaceOffset = freeSpaceOffset,
-                SlotCount = slotCount,
-                CheckSum = checkSum
-            };
+                header.FreeSpaceOffset =
+                    BinaryPrimitives.ReadInt32LittleEndian(buffer.Slice(8, 4));
+                header.SlotCount =
+                    BinaryPrimitives.ReadInt16LittleEndian(buffer.Slice(12, 2));
+            }
+            else
+            {
+                // Index / Free pages → no slot semantics
+                header.FreeSpaceOffset = DbOptions.HeaderSize;
+                header.SlotCount = 0;
+            }
+
+            header.CheckSum =
+                BinaryPrimitives.ReadInt32LittleEndian(buffer.Slice(16, 4));
 
             return header;
         }
+
     }
 }

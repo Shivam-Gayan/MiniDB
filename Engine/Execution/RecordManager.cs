@@ -38,27 +38,38 @@ namespace DB.Engine.Execution
         public RID Insert(string tableName, Record record)
         {
             if (string.IsNullOrWhiteSpace(tableName))
-                throw new ArgumentException("Table name cannot be empty.", nameof(tableName));
+                throw new ArgumentException(nameof(tableName));
 
             ArgumentNullException.ThrowIfNull(record);
 
-            // Ensure table exists
             if (!_tableManager.TableExists(tableName))
                 throw new InvalidOperationException($"Table '{tableName}' does not exist.");
 
-            // Ensure schema matches (simple check: same column count + column names)
             var schema = _tableManager.GetSchema(tableName)
                 ?? throw new InvalidOperationException($"Schema for table '{tableName}' not found.");
 
-            if (schema.ColumnCount != record.Schema.ColumnCount ||
-                !schema.Columns.SequenceEqual(record.Schema.Columns))
+            // PRE-CHECK UNIQUE INDEXES
+            for (int i = 0; i < schema.Columns.Count; i++)
             {
-                throw new InvalidOperationException("Record schema does not match table schema.");
+                string column = schema.Columns[i];
+
+                if (_indexManager.HasIndex(tableName, column))
+                {
+                    var value = record.Values[i];
+
+                    if (_indexManager.Exists(tableName, column, value!))
+                    {
+                        throw new InvalidOperationException(
+                            $"UNIQUE index violation on {tableName}({column}) for value '{value}'.");
+                    }
+                }
             }
 
-            // Delegate actual insertion to TableManager (which handles pages, allocation, meta updates)
+
+            //  STEP 2: INSERT INTO TABLE (SAFE NOW)
             var rid = _tableManager.Insert(tableName, record);
 
+            //  STEP 3: INSERT INTO INDEXES (CAN'T FAIL NOW)
             for (int i = 0; i < schema.Columns.Count; i++)
             {
                 string column = schema.Columns[i];
@@ -72,6 +83,7 @@ namespace DB.Engine.Execution
 
             return rid;
         }
+
 
         /// <summary>
         /// Reads a record from a specific table by its RID.

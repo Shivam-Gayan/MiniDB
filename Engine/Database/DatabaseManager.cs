@@ -106,6 +106,7 @@ namespace DB.Engine.Database
 
         }
 
+
         /// <summary>
         /// Sets the given database as the active working context.
         /// </summary>
@@ -250,5 +251,6 @@ namespace DB.Engine.Database
             // Create and return a new DatabaseContext — caller manages lifecycle (Close)
             return new DatabaseContext(dbName, dbPath);
         }
+
     }
 }
