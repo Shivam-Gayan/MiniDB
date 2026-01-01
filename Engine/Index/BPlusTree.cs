@@ -436,6 +436,14 @@ namespace DB.Engine.Index
 
         private void HandleUnderflow(Page node)
         {
+            
+            // We only check if it becomes completely empty (handled by TryShrinkRoot).
+            if (node.PageId == RootPageId)
+            {
+                TryShrinkRoot();
+                return;
+            }
+
             IndexNodeHeader.Read(node.Buffer, out bool isLeaf, out _, out _);
 
             if (isLeaf)
@@ -451,6 +459,9 @@ namespace DB.Engine.Index
                 MergeInternal(node);
             }
 
+            // After merging children, the parent might now be underflowed, 
+            // but we don't recurse here; the caller (Delete) or the recursive structure usually handles it.
+            // However, we MUST check if the Root itself needs shrinking if we just merged into it.
             TryShrinkRoot();
         }
         private bool BorrowFromRightLeaf(Page leaf)

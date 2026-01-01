@@ -137,6 +137,10 @@ namespace DB.Engine.Execution.Parsing
                 "BETWEEN" => new Token(TokenType.Between, text),
                 "AND" => new Token(TokenType.And, text),
                 "DROP" => new Token(TokenType.Drop, text),
+                "TRUE" => new Token(TokenType.True, text),
+                "FALSE" => new Token(TokenType.False, text),
+                "ON" => new Token(TokenType.On, text),
+                "DELETE" => new Token(TokenType.Delete, text),
                 _ => new Token(TokenType.Identifier, text)
             };
         }

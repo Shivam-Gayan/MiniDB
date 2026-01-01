@@ -23,12 +23,22 @@ namespace DB.Engine.Execution.Planning
                 InsertNode ins => BuildInsert(ins),
                 SelectNode sel => BuildSelect(sel),
                 DropTableNode dt => BuildDropTable(dt),
+                DeleteNode del => BuildDelete(del),
+
                 _ => throw new NotSupportedException(
                     $"Unsupported statement type: {statement.GetType().Name}")
             };
         }
 
         // ------------------- Builders -------------------
+
+        private static ICommand BuildDelete(DeleteNode node)
+        {
+            return new DeleteCommand(
+                node.TableName,
+                node.Where
+            );
+        }
         private static ICommand BuildDropTable(DropTableNode node)
         {
             return new DropTableCommand(node.TableName);

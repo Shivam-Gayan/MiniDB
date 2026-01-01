@@ -36,7 +36,9 @@ namespace DB.Engine.Execution.Parsing
 
                 throw Error("Expected TABLE or INDEX after CREATE");
             }
-            
+
+            if (Match(TokenType.Delete)) return ParseDelete();
+
             if (Match(TokenType.Drop))
             {
                 return ParseDropTable();
@@ -49,6 +51,23 @@ namespace DB.Engine.Execution.Parsing
                 return ParseSelect();
 
             throw Error($"Unexpected token '{Peek().Lexeme}'");
+        }
+
+        // ------------------- Delete Record -------------------
+        private StatementNode ParseDelete()
+        {
+            Consume(TokenType.From, "Expected FROM after DELETE");
+            string table = Consume(TokenType.Identifier, "Expected table name").Lexeme;
+
+            WhereNode? where = null;
+            if (Match(TokenType.Where))
+            {
+                where = ParseWhere();
+            }
+
+            ConsumeOptional(TokenType.Semicolon);
+
+            return new DeleteNode(table, where);
         }
         // ------------------- DROP TABLE -------------------
 
@@ -67,7 +86,7 @@ namespace DB.Engine.Execution.Parsing
 
             string indexName = Consume(TokenType.Identifier, "Expected index name").Lexeme;
 
-            Consume(TokenType.From, "Expected FROM after index name");
+            Consume(TokenType.On, "Expected ON after index name");
 
             string table = Consume(TokenType.Identifier, "Expected table name").Lexeme;
 
@@ -200,6 +219,15 @@ namespace DB.Engine.Execution.Parsing
             if (Match(TokenType.String))
             {
                 return Previous().Lexeme;
+            }
+            if (Match(TokenType.True))
+            {
+                return true;
+            }
+
+            if (Match(TokenType.False))
+            {
+                return false;
             }
 
             throw Error("Expected literal value");
