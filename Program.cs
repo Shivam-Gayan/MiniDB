@@ -10,28 +10,16 @@ class Program
         Console.WriteLine("SimpleDB Engine");
         Console.WriteLine("Type EXIT to quit\n");
 
-        // ------------------- Bootstrap -------------------
-
         var dbManager = new DatabaseManager();
-
-        // Ensure default database exists
-        const string defaultDb = "testdb";
-
-        if (!dbManager.ListDatabases(false).Contains(defaultDb))
-        {
-            dbManager.CreateDatabase(defaultDb);
-        }
-
-        dbManager.UseDatabase(defaultDb);
 
         // ------------------- REPL -------------------
 
         while (true)
         {
-            // Prompt: show db name if active
+            // Prompt: show db name if active, otherwise just "> "
             string prompt = dbManager.ActiveDatabase != null
                 ? $"{dbManager.ActiveDatabase}> "
-                : "db> ";
+                : "> ";
 
             Console.Write(prompt);
 
@@ -46,7 +34,7 @@ class Program
 
             try
             {
-                // 1️ Session / Meta commands (USE, SHOW, EXIT)
+                // 1. Session / Meta commands (USE, SHOW, EXIT)
                 if (SessionCommandHandler.TryHandle(input, dbManager, out bool shouldExit))
                 {
                     if (shouldExit)
@@ -55,7 +43,14 @@ class Program
                     continue;
                 }
 
-                // 2️ SQL pipeline
+                // 2. Check if database is selected before running SQL
+                if (dbManager.ActiveDatabase == null)
+                {
+                    Console.WriteLine("No database selected. Use 'CREATE DATABASE <name>' then 'USE <name>'.");
+                    continue;
+                }
+
+                // 3. SQL pipeline
                 var lexer = new Lexer(input);
                 var tokens = lexer.Tokenize();
 
