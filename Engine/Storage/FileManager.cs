@@ -1,4 +1,5 @@
-﻿using System;
+﻿using DB.Engine.Index;
+using System;
 using System.IO;
 
 namespace DB.Engine.Storage
@@ -13,28 +14,50 @@ namespace DB.Engine.Storage
         public string DatabasePath => _dbFilePath; // optional helper
 
         // Constructor
-        public FileManager(string path)
+        public FileManager(string path, bool isIndexFile = false)
         {
             _dbFilePath = path;
 
-            // If DB file doesn't exist → create new one
             if (!File.Exists(_dbFilePath))
             {
                 _stream = new FileStream(_dbFilePath, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None);
-                InitializeNewDatabase();
+
+                if (!isIndexFile)
+                    InitializeNewDatabase(); // data file
+                else
+                    InitializeIndexFile();   // index file
             }
             else
             {
-                // Open existing DB file
                 _stream = new FileStream(_dbFilePath, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
 
-                // Validate file integrity (must align with page size)
                 if (_stream.Length % DbOptions.PageSize != 0)
-                    throw new InvalidDataException("Corrupted database file: size not aligned with page size.");
+                    throw new InvalidDataException("Corrupted file: size not aligned.");
 
                 _pageCount = (int)(_stream.Length / DbOptions.PageSize);
             }
         }
+        private void InitializeIndexFile()
+        {
+            // Page 0 = IndexFileHeader ONLY
+            var headerPage = new Page(0, PageType.Index);
+
+            var header = new IndexFileHeader
+            {
+                PageSize = DbOptions.PageSize,
+                IndexCount = 0,
+                FirstMetaPageId = -1
+            };
+
+            header.WriteTo(headerPage.Buffer);
+
+            _stream.Seek(0, SeekOrigin.Begin);
+            _stream.Write(headerPage.Buffer, 0, DbOptions.PageSize);
+            _stream.Flush(true);
+
+            _pageCount = 1;
+        }
+
 
         // Static factory for convenience
         public static FileManager OpenOrCreate(string path)
